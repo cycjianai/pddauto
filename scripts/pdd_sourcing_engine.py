@@ -8,7 +8,7 @@
   2. 通道 B (USB_DEBUG, 105ms~2.0s/SPU)：
      - 有图搜同款 ➔ 【单件原子流相册以图搜图】(传一张、搜一张、finally 销毁一张，相册零污染)；
      - 无图搜关键词 ➔ DeepLink 0.1s 秒开 + 限定包名 dumpsys 105ms 内存提取；
-  3. 通道 C (ESP32_PHYSICAL)：遇滑块/强风控自动降级至 ESP32 BLE HID + 预编译 mac_ocr (50ms)。
+  3. 通道 C (ESP32_PHYSICAL)：遇滑块/强风控自动降级至 ESP32 BLE HID + 手机投屏窗口捕获 + 预编译 mac_ocr (50ms) / Vision OCR + 跨屏剪贴板分享链接提取。
 - 六大防坑铁律：
   * 同 SPU 多 SKU 预聚合（aggregate_rows_by_spu），同一 SPU 仅流转 1 次图片、加载 1 次详情页；
   * 严禁伪造/推算 goods_id 或 sku_id（强制校验 ^\\d+$，防触发拼多多 WAF “当前访问人数较多，排队中”）；
@@ -29,7 +29,7 @@ import urllib.parse
 import urllib.request
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import Quartz
@@ -61,6 +61,7 @@ RISK_PATTERNS = [
     r"系统开小差",
     r"登录失效",
     r"重新登录",
+    r"前往APP查看价格",
     r"risk.?control",
 ]
 
@@ -159,7 +160,7 @@ def compute_order_ratio(store_spec_text: str, pdd_spec_text: str) -> int:
 def parse_raw_goods_data(raw_goods: Dict[str, Any]) -> Dict[str, Any]:
     """
     解析 window.rawData.store.initDataObj.goods 原始字典：
-    - 校验真实数字 goods_id 與 sku_id；
+    - 校验真实数字 goods_id 与 sku_id；
     - 多级规格使用中文分号 "；" 拼接；
     - 直接将 s.group_price 解析为元（float），严禁除以 100。
     """
@@ -243,6 +244,7 @@ class PDDSourcingEngine:
     ):
         self.device_id = device_id
         self.esp32_ip = esp32_ip
+        self.esp32_action_url = f"http://{esp32_ip}/action"
         self.window_name = window_name
         self.cdp_port = cdp_port
         self.wid = None
@@ -498,8 +500,22 @@ class PDDSourcingEngine:
             "error": "未在当前活动中抓取到完整的 goods_id/sku_id",
         }
 
+    def process_row(self, row_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        [货盘单行通用路由处理器]
+        1. 有图片 URL ➔ 走 search_by_image_atomic_flow (原子流搜图，查完即删)
+        2. 无图片 URL ➔ 走 deeplink_search (0.1s 关键词直达 + 语义匹配)
+        """
+        img_url = str(row_data.get("image_url") or "").strip()
+        keyword = str(row_data.get("keyword") or row_data.get("product_name") or "").strip()
+        if img_url and img_url.startswith("http"):
+            ok = self.search_by_image_atomic_flow(img_url)
+            return {"ok": ok, "method": "image_search", "keyword": keyword}
+        ok = self.deeplink_search(keyword)
+        return {"ok": ok, "method": "deeplink_search", "keyword": keyword}
+
     # ==========================================
-    # 通道 C：ESP32 硬件拟真与预编译 mac_ocr 极速视觉
+    # 通道 C：ESP32 硬件拟真 + 手机投屏 + 预编译 mac_ocr / Vision OCR
     # ==========================================
 
     @staticmethod
@@ -518,6 +534,7 @@ class PDDSourcingEngine:
             return None
 
     def refresh_window(self) -> bool:
+        """获取投屏窗口实时 Bounds 与 WID"""
         if not HAS_MACOS_FRAMEWORKS:
             return False
         windows = Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionAll, Quartz.kCGNullWindowID)
@@ -530,10 +547,68 @@ class PDDSourcingEngine:
         return False
 
     def activate_window(self):
+        """激活并置顶投屏窗口"""
         subprocess.run(["osascript", "-e", f'tell application "{self.window_name}" to activate'])
         time.sleep(0.1)
 
+    def capture_screen(self, save_path: str = "/tmp/pdd_engine_screen.png") -> Tuple[str, int, int]:
+        """20ms 级无感截取手机投屏最新画面"""
+        if not HAS_MACOS_FRAMEWORKS:
+            raise RuntimeError("macOS Quartz/PIL framework unavailable")
+        self.refresh_window()
+        if not self.wid:
+            raise RuntimeError("投屏窗口未找到，请确认 OPPO 互联 / 手机投屏已连接")
+
+        cg_img = Quartz.CGWindowListCreateImage(
+            Quartz.CGRectNull,
+            Quartz.kCGWindowListOptionIncludingWindow,
+            self.wid,
+            Quartz.kCGWindowImageBoundsIgnoreFraming,
+        )
+        width = Quartz.CGImageGetWidth(cg_img)
+        height = Quartz.CGImageGetHeight(cg_img)
+        bytes_per_row = Quartz.CGImageGetBytesPerRow(cg_img)
+        pixel_data = Quartz.CGDataProviderCopyData(Quartz.CGImageGetDataProvider(cg_img))
+        img = Image.frombuffer("RGBA", (width, height), pixel_data, "raw", "BGRA", bytes_per_row, 1)
+        img.convert("RGB").save(save_path)
+        return save_path, width, height
+
+    def ocr_screen(self, img_path: str) -> List[Dict[str, Any]]:
+        """通过 Apple Vision 原生框架执行毫秒级 OCR 文本与归一化坐标检测"""
+        if not HAS_MACOS_FRAMEWORKS:
+            return []
+        url = NSURL.fileURLWithPath_(img_path)
+        request_handler = Vision.VNImageRequestHandler.alloc().initWithURL_options_(url, None)
+        boxes = []
+
+        def completion_handler(request, error):
+            results = request.results()
+            if not results:
+                return
+            for obs in results:
+                cand = obs.topCandidates_(1)[0]
+                boxes.append((cand.string(), obs.boundingBox()))
+
+        req = Vision.VNRecognizeTextRequest.alloc().initWithCompletionHandler_(completion_handler)
+        req.setRecognitionLanguages_(["zh-Hans", "en-US"])
+        req.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
+        request_handler.performRequests_error_([req], None)
+
+        parsed = []
+        for text, bbox in boxes:
+            norm_y = 1.0 - (bbox.origin.y + bbox.size.height / 2.0)
+            norm_x = bbox.origin.x + bbox.size.width / 2.0
+            parsed.append({
+                "text": text,
+                "norm_x": norm_x,
+                "norm_y": norm_y,
+                "w": bbox.size.width,
+                "h": bbox.size.height,
+            })
+        return parsed
+
     def click_desktop(self, desk_x: float, desk_y: float):
+        """点击 Mac 桌面指定物理/逻辑坐标"""
         if not HAS_MACOS_FRAMEWORKS:
             return
         self.activate_window()
@@ -545,11 +620,90 @@ class PDDSourcingEngine:
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
 
     def click_relative(self, rel_x: float, rel_y: float):
+        """按投屏窗口相对比例点击"""
         if not self.refresh_window() or not self.bounds:
             return
         desk_x = self.bounds["X"] + self.bounds["Width"] * rel_x
         desk_y = self.bounds["Y"] + self.bounds["Height"] * rel_y
         self.click_desktop(desk_x, desk_y)
+
+    def swipe_back(self):
+        """执行系统级侧滑返回手势"""
+        if not HAS_MACOS_FRAMEWORKS or not self.refresh_window() or not self.bounds:
+            return
+        start_x = self.bounds["X"] + 5
+        start_y = self.bounds["Y"] + self.bounds["Height"] * 0.5
+        end_x = start_x + 120
+        end_y = start_y
+
+        self.activate_window()
+        start_pt = Quartz.CGPoint(start_x, start_y)
+        down = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventLeftMouseDown, start_pt, Quartz.kCGMouseButtonLeft)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
+        time.sleep(0.05)
+
+        steps = 15
+        for i in range(1, steps + 1):
+            t = i / steps
+            cur_x = start_x + (end_x - start_x) * t
+            pt = Quartz.CGPoint(cur_x, start_y)
+            drag = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventLeftMouseDragged, pt, Quartz.kCGMouseButtonLeft)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, drag)
+            time.sleep(0.01)
+
+        end_pt = Quartz.CGPoint(end_x, end_y)
+        up = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventLeftMouseUp, end_pt, Quartz.kCGMouseButtonLeft)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
+        time.sleep(1.0)
+
+    def search_keyword(self, keyword: str):
+        """在投屏窗口聚焦搜索框、清空、粘贴并回车搜索"""
+        p = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
+        p.communicate(keyword.encode("utf-8"))
+
+        self.click_relative(0.5, 0.15)
+        time.sleep(0.5)
+
+        script = """
+        tell application "System Events"
+            keystroke "a" using command down
+            delay 0.1
+            keystroke "v" using command down
+            delay 0.3
+            key code 36
+        end tell
+        """
+        subprocess.run(["osascript", "-e", script])
+        time.sleep(2.0)
+
+    def copy_share_link(self) -> Optional[str]:
+        """详情页点击右上角分享并结合 OCR/相对坐标提取剪贴板链接"""
+        self.click_relative(0.90, 0.14)
+        time.sleep(1.2)
+
+        try:
+            screen_path, _, _ = self.capture_screen("/tmp/pdd_share_check.png")
+            texts = self.ocr_screen(screen_path)
+            for item in texts:
+                if "复制链接" in item["text"]:
+                    self.click_relative(item["norm_x"], item["norm_y"] - 0.03)
+                    time.sleep(1.0)
+                    break
+            else:
+                self.click_relative(0.36, 0.66)
+                time.sleep(1.0)
+        except Exception:
+            self.click_relative(0.36, 0.66)
+            time.sleep(1.0)
+
+        cb = subprocess.check_output(["pbpaste"]).decode("utf-8", errors="ignore").strip()
+        if "http" in cb:
+            return cb
+        return None
+
+    def esp32_copy_share_link(self) -> Optional[str]:
+        """快速相对坐标点击分享与复制链接"""
+        return self.copy_share_link()
 
     @staticmethod
     def resolve_goods_id_from_share_url(share_url: str) -> Optional[str]:

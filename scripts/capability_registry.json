@@ -1,0 +1,26 @@
+{
+  "schema_version": "pddauto-capability-registry-v1",
+  "capability_statuses": [
+    "implemented",
+    "runtime_guided",
+    "planned"
+  ],
+  "platforms": {
+    "pdd": {
+      "display_name": "拼多多",
+      "adapter_reference": "references/platforms/pdd.md",
+      "tasks": {
+        "sourcing_and_similar_product_matching": {
+          "status": "implemented",
+          "uses_operations_workbook": false,
+          "uses_shared_execution_contract": false,
+          "always_load_detail_references": true,
+          "task_reference": "references/tasks/sourcing-and-similar-product-matching.md",
+          "detail_references": [
+            "references/platforms/pdd-sourcing-playbook.md"
+          ]
+        }
+      }
+    }
+  }
+}

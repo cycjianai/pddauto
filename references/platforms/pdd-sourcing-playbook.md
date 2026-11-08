@@ -1,6 +1,6 @@
 # 拼多多采购端实战规程与三级极速架构指南 (PDD Sourcing Playbook)
 
-本文件是第 3 层深度实战合同，定义拼多多采购寻源、同 SPU 多规格一次性提取、真实结算链接（`order_checkout.html`）合成、相册单件原子流搜图及防风控自愈的底层技术细节与可直接复用的代码配方。
+本文件是第 3 层深度实战合同，定义拼多多采购寻源、同 SPU 多规格一次性提取、真实结算链接（`order_checkout.html`）合成、相册单件原子流搜图、ESP32 物理拟真与防风控自愈的底层技术细节与可直接复用的代码配方。
 
 ---
 
@@ -114,7 +114,7 @@ if (imgs.length > 0) imgs[0].click();
 
 ---
 
-## 五、 通道 C 实战配方：ESP32 物理拟真与预编译 `mac_ocr` 极速视觉
+## 五、 通道 C 实战配方：ESP32 物理拟真、手机投屏坐标系与预编译 `mac_ocr`
 
 1. **预编译 Apple Vision OCR（提速 40 倍）**：
    - 严禁在循环中使用 `swift scripts/vision_ocr.swift` 解释执行（每次启动耗时 ~2.0s）；
@@ -123,6 +123,19 @@ if (imgs.length > 0) imgs[0].click();
      swiftc scripts/vision_ocr.swift -O -o /tmp/mac_ocr
      ```
    - 后续每次调用 `/tmp/mac_ocr /tmp/frame.png` 仅需 **50ms**。
-2. **挽留弹窗与下单抽屉自愈**：
+2. **ESP32-S3 BLE HID 固件与硬件三项纪律**：
+   - **波特率锁定 460800**：`esptool.py` 刷写 ESP32-S3 固件时波特率必须设置为 `460800`，避免高频丢包；
+   - **Wi-Fi 仅支持 2.4GHz**：ESP32 硬件射频不支持 5GHz Wi-Fi；
+   - **BLE 广播扫描响应显式开启**：NimBLE 广播包必须调用 `adv->setName("Yuandian-Touch")` 并开启 `adv->enableScanResponse(true)`。
+3. **Retina 2x 与投屏窗口坐标归一化**：
+   - Vision OCR 返回的 `origin.y` 从左下角起算，统一转换为从顶部起算的归一化相对坐标 (`norm_x`, `norm_y`)：
+     $$\text{norm\_y} = 1.0 - (\text{bbox.origin.y} + \frac{\text{bbox.size.h}}{2.0})$$
+     $$\text{norm\_x} = \text{bbox.origin.x} + \frac{\text{bbox.size.w}}{2.0}$$
+   - 桌面真实点击坐标：
+     $$\text{Desktop\_X} = \text{Bounds.X} + \text{Bounds.Width} \times \text{norm\_x}$$
+     $$\text{Desktop\_Y} = \text{Bounds.Y} + \text{Bounds.Height} \times \text{norm\_y}$$
+   - 窗口需置顶在主屏幕正坐标区（避免 `X < 0` 负坐标扩展屏拦截及 $Y < 33$ 窗口标题栏误触）。
+4. **挽留弹窗、下单抽屉自愈与跨端剪贴板**：
    - 遇退出挽留弹窗（`继续支付` / `先去逛逛`），严禁点继续支付，OCR 定位 **`先去逛逛`** 中心坐标点击关闭；
-   - 固件烧录波特率锁定 `460800`，仅连 `2.4GHz` Wi-Fi，开启 `enableScanResponse(true)`。
+   - 误触拉起下半屏支付抽屉时，点击右上角叉号或调用 `swipe_back()` 触发侧滑返回；
+   - 关闭手机后台微信/客服软件的【后台弹出界面】和【悬浮窗】权限，防止弹窗打断前台受控状态。
