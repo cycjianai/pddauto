@@ -1,0 +1,4 @@
+interface:
+  display_name: "拼多多自动寻源与找链接 (pddauto)"
+  short_description: "控制安卓手机ADB/CDP在拼多多以图搜图或搜词，提取真实商品链接与结算链接并回填F~K六列"
+  default_prompt: "使用 $pddauto，先按 SPU 预聚合货盘行，优先通过 Chrome CDP 白盒或 Android ADB 单件原子流以图搜图提取真实 goods_id 与 sku_id，按 F~K 六列标准回填并校验结算链接。"
