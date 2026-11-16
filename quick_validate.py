@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""快速校验入口：编译检查全部 Python 脚本并运行单元测试。"""
+"""快速校验入口：编译检查全部 Python/Node.js 脚本并运行单元测试。"""
 
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -37,12 +38,21 @@ def main() -> int:
     for path in python_tests:
         run([sys.executable, str(path)])
 
+    node_bin = shutil.which("node")
+    node_tested = False
+    if node_bin:
+        ratio_test = SCRIPTS / "test_ratio.mjs"
+        if ratio_test.exists():
+            run([node_bin, str(ratio_test)])
+            node_tested = True
+
     print(
         json.dumps(
             {
                 "passed": True,
                 "python_sources": len(python_sources),
                 "python_tests": len(python_tests),
+                "node_ratio_test_passed": node_tested,
             },
             ensure_ascii=False,
         )

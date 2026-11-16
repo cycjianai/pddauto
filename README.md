@@ -1,75 +1,86 @@
-# 拼多多采购寻源与安卓真机/CDP自动化引擎 (pddauto)
+# 拼多多与 1688 采购寻源与自动化比价引擎 (pddauto)
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](VERSION)
-[![Channels](https://img.shields.io/badge/channels-Chrome%20CDP%20%7C%20Android%20ADB%20%7C%20ESP32%20OCR-green.svg)](#一三级极速通道架构)
+[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](VERSION)
+[![Channels](https://img.shields.io/badge/channels-1688%20CDP%20%7C%20PDD%20CDP%20%7C%20Android%20ADB%20%7C%20ESP32-green.svg)](#一多平台极速通道架构)
 
-本仓库是从多平台商品运营体系中独立拆出的**拼多多采购寻源、安卓真机控制找链接、同 SPU 多规格聚合比价与标准六列（`F~K` 列）结算链接回填 Skill**。
+本仓库专用于即时零售闪电仓与多渠道货盘的**跨平台（1688 源头工厂 + 拼多多单件包邮）采购寻源、同 SPU 多规格聚合比价、相似品多模态核验及标准结算链接回填 Skill**。
 
 ---
 
-## 一、 三级极速通道架构
+## 一、 多平台极速通道架构
 
 ```mermaid
-flowchart LR
-    Input["📦 货盘表输入<br>(SPU预聚合)"] --> Engine["⚡ PDDSourcingEngine<br>(三级通道自动探测与调度)"]
+flowchart TD
+    Input["📦 待寻源商品池 (SPU/SKU预聚合)"] --> Router{"🔀 搜索路由与品类判定"}
 
-    Engine -->|"优先级 1: 端口 9222 就绪"| ModeA["🌐 通道 A: Chrome CDP 白盒<br>直读 window.rawData.goods (~1.2s/SPU)"]
-    Engine -->|"优先级 2: ADB 设备在线"| ModeB["📱 通道 B: Android ADB 真机控制<br>DeepLink秒开 + 相册单件原子流搜图 + dumpsys内存直提"]
-    Engine -->|"优先级 3: 滑块/强风控降级"| ModeC["🤖 通道 C: 手机投屏 + ESP32 + 原生OCR<br>预编译 mac_ocr (50ms) + 分享短链 302 还原"]
+    Router -->|"非标百货 / 日杂 / 宽泛描述<br/>(洗头水/抹布/牵引绳/收纳盒)"| VisualSearch["📸 搜图优先 (Image Search)"]
+    Router -->|"知名品牌 / 强参数标品<br/>(海飞丝/清扬/得力/双鹿)"| TextSearch["🔍 精准词搜 (Brand Text Search)"]
 
-    ModeA --> Output["📊 标准 F~K 六列回填<br>商品链接 / 规格 / 结算链接 / 下单比例 / 采购价 / 单位价"]
-    ModeB --> Output
-    ModeC --> Output
+    VisualSearch --> Channel1688["🏭 1688 源头工厂以图搜款<br>• 单标签生命周期管控 (防标签爆炸)<br>• YOLO 多候选主体切换与框选自愈<br>• 55秒滑块自然冷却自愈<br>• 几万/几千高销量严选"]
+    VisualSearch --> ChannelPDD["🛍️ 拼多多单件包邮寻源<br>• 通道 A: Chrome CDP 白盒直提 (~1.2s)<br>• 通道 B: Android ADB 相册原子流搜图<br>• 通道 C: ESP32 物理拟真 + 原生 OCR"]
+
+    TextSearch --> Channel1688
+    TextSearch --> ChannelPDD
+
+    Channel1688 --> UnitEngine["⚖️ 基础包装语义对齐引擎 (Unit Alignment)<br>家庭装80片 vs 240片(3包)/480片(6包) 严防错除以单片"]
+    ChannelPDD --> UnitEngine
+
+    UnitEngine --> ProfitGate{"💰 毛利与起订门槛检验<br>• 到手单价 <= 零售价 50%<br>• MOQ <= 25, 库存 >= 20"}
+
+    ProfitGate -->|"通过"| Output["📊 交付工作簿落盘<br>Excel 原子增量写入 + 动态校验公式"]
 ```
-
-| 对比维度 | 通道 A：Chrome CDP 白盒直提 (`cdp_whitebox`) | 通道 B：Android ADB 真机控制 (`usb_debug`) | 通道 C：ESP32 物理拟真 + 原生 OCR (`esp32_physical`) |
-| :--- | :--- | :--- | :--- |
-| **底层通道** | WebSocket 直连本机已登录常规 Chrome（端口 `9222`） | Android ADB 调试协议 + Intent DeepLink + Activity 内存转储 | 手机投屏窗口控制 + ESP32 BLE HID + 预编译 `mac_ocr` |
-| **核心优势** | 无需操作手机屏幕；直接读取 `window.rawData`，一次性拿出全部子规格 | 支持调用拼多多 App 原生**相册以图搜图**（`search_image_capture.html`），同款视觉识别极准 | 零系统调试特征，可穿透高对抗人机滑块与设备指纹风控 |
-| **单 SPU 耗时** | **~1.2 ~ 1.5 秒/SPU** | **关键词 0.1s 秒开 + 105ms 内存提取**；以图搜图约 **2.0s/SPU** | **2.5 ~ 3.5 秒/SPU**（配合预编译 `mac_ocr` 50ms 视觉识别） |
-| **规格与价格获取** | 直读 `window.rawData.store.initDataObj.goods.skus` | `adb shell "dumpsys activity com.xunmeng.pinduoduo"` | 点击分享复制短链 ➔ 302 还原 `goods_id` |
 
 ---
 
-## 二、 核心能力与目录结构
+## 二、 核心目录结构
 
 ```text
 pddauto/
-├── SKILL.md                                           # 🧭 Skill 顶层入口与核心铁律
+├── SKILL.md                                           # 🧭 Skill 顶层入口与八大核心红线
 ├── README.md                                          # 📖 仓库导览与架构说明
-├── VERSION                                            # 版本号 (1.0.0)
+├── VERSION                                            # 版本号 (2.0.0)
 ├── quick_validate.py                                  # 语法与单元测试一键自检脚本
 ├── agents/
 │   └── openai.yaml                                    # Agent 界面展示与默认提示词配置
 ├── references/
 │   ├── platforms/
-│   │   ├── pdd.md                                     # 第 1 层：拼多多采购端总入口
-│   │   └── pdd-sourcing-playbook.md                   # 第 3 层：CDP / ADB / ESP32 实战规程与代码配方
+│   │   ├── pdd.md                                     # 拼多多采购端平台入口
+│   │   ├── pdd-sourcing-playbook.md                   # 拼多多 CDP / ADB / ESP32 实战规程与代码配方
+│   │   └── ali1688-sourcing-playbook.md               # 1688 单标签防风控与 55s 滑块自愈手册
 │   └── tasks/
-│       └── sourcing-and-similar-product-matching.md   # 第 2 层：寻源 SOP、相似品四级打分与 F~K 六列合同
+│       ├── sourcing-and-similar-product-matching.md   # 寻源 SOP、相似品四级打分与六列合同
+│       ├── unit-alignment-spec.md                     # 基础销售单位与多层级包装语义对齐规范
+│       └── visual-bounding-box-sop.md                 # 以图搜款多主体修正与 YOLO 框选 SOP
 └── scripts/
+    ├── unit_alignment.mjs                             # ⚖️ 包装语义解析与单位对齐核心算法
+    ├── test_ratio.mjs                                 # ✅ 13 大典型实战用例自动化回归测试集
+    ├── ali1688_sourcing_worker.mjs                    # 🏭 1688 高销以图搜款与单标签常驻检索主引擎
+    ├── pdd_phone_worker_v3.mjs                        # 📱 拼多多移动端单件包邮校验引擎
     ├── pdd_sourcing_engine.py                         # 🛠️ 拼多多三级极速寻源与结算链接合成引擎
+    ├── flush_excel.py                                 # 📊 Excel 原子增量写入工具
     ├── test_pdd_sourcing_engine.py                    # ✅ 引擎确定性单元测试
     └── vision_ocr.swift                               # 🔍 macOS Apple Vision 原生极速 OCR 源码
 ```
 
 ---
 
-## 三、 标准六列交付 Schema（`F~K` 列）
+## 三、 寻源核心原则速查
 
-| 列序号 | 列名 | 填充规范与公式 | 示例数据 |
-| :---: | :--- | :--- | :--- |
-| **F 列** | **拼多多商品链接** | `https://mobile.yangkeduo.com/goods.html?goods_id={goods_id}` | `https://mobile.yangkeduo.com/goods.html?goods_id=940322316708` |
-| **G 列** | **拼多多规格** | 真实子规格文本；**多级规格严格以中文分号 `；` 间隔** | `480ML*9瓶【囤货】；混合口味 【新老包装随机】` |
-| **H 列** | **结算链接** | `https://mobile.yangkeduo.com/order_checkout.html?goods_id={goods_id}&sku_id={sku_id}&goods_number=1` | `https://mobile.yangkeduo.com/order_checkout.html?goods_id=940322316708&sku_id=1892532124926&goods_number=1` |
-| **I 列** | **下单比例** | $\max(1, \text{round}(\text{PDD规格内含件数} \div \text{门店SKU件数}))$ | `9` |
-| **J 列** | **采购价** | `parseFloat(sku.group_price)`（单位：**元**，保留 2 位小数，严禁除以 100） | `44.00` |
-| **K 列** | **单位采购价** | 动态公式 `=ROUND(J{row}/I{row}, 2)` | `=ROUND(J2/I2, 2)` |
+1. **非标品搜图优先**：洗头洗发水、抹布、收纳盒等宽泛描述商品严禁直接文字搜索，必须提取主图走以图搜款；
+2. **高销严选**：供货商必须优先匹配几万或几千销量的源头实力工厂，坚决剔除 $<50$ 件销量的低销幽灵店；
+3. **包装对齐**：家庭装 80 片/包对齐 240 片规格时除以 3，对齐 480 片时除以 6，严禁错当成单片几分钱；耐用品严禁除以赠品袋数；
+4. **YOLO 选框自愈**：遇牵引绳误框狗狗等情况，自动轮询候选主体框或通过 Canvas 重绘选框；
+5. **单标签铁律**：限定搜图 popover 按钮选择器，拦截外弹，CDP 定期杀灭临时标签页，阻断“商机组货”等营销页爆标签；
+6. **55秒滑块自然自愈**：滑块风控静置 55 秒后刷新自动清除，严禁暴力拖动。
 
 ---
 
-## 四、 本地自检与测试
+## 四、 本地自检与运行
 
 ```bash
+# 1. 运行包装语义算法回归测试 (13 个核心测试用例)
+node scripts/test_ratio.mjs
+
+# 2. 运行 Python 引擎自检与单测
 python3 quick_validate.py
 ```

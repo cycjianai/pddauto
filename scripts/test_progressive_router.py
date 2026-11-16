@@ -38,7 +38,21 @@ def main() -> int:
         "references/tasks/sourcing-and-similar-product-matching.md",
         "references/platforms/pdd-sourcing-playbook.md",
     ]
-    print(json.dumps({"passed": True, "cases": 2}, ensure_ascii=False))
+
+    ali_route = run(
+        "--request-text",
+        "用1688以图搜款在首页搜百货日用商品，注意多主体框选切换和55s冷却",
+    )
+    assert ali_route["platform_adapter"] == "ali1688"
+    assert ali_route["task_mode"] == "visual_and_keyword_sourcing"
+    assert ali_route["intent"] == "execution"
+    assert ali_route["load_order"] == [
+        "references/platforms/ali1688-sourcing-playbook.md",
+        "references/tasks/visual-bounding-box-sop.md",
+        "references/tasks/unit-alignment-spec.md",
+    ]
+
+    print(json.dumps({"passed": True, "cases": 3}, ensure_ascii=False))
     return 0
 
 

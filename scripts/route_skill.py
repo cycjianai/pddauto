@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Progressive skill router for pddauto (PDD sourcing and link extraction)."""
+"""Progressive skill router for pddauto (PDD & 1688 sourcing and link extraction)."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 REGISTRY_PATH = Path(__file__).with_name("capability_registry.json")
 
-PLATFORMS = ("pdd",)
-TASKS = ("sourcing_and_similar_product_matching",)
+PLATFORMS = ("pdd", "ali1688")
+TASKS = ("sourcing_and_similar_product_matching", "visual_and_keyword_sourcing")
 INTENTS = ("auto", "review", "diagnosis", "implementation", "execution")
 
 
@@ -64,9 +64,16 @@ def infer_intent(request_text: str) -> str:
 
 
 def route(args: argparse.Namespace, registry: dict[str, Any]) -> tuple[dict[str, Any], int]:
-    platform = "pdd"
-    task = "sourcing_and_similar_product_matching"
+    platform = args.platform
+    if not platform:
+        text = (args.request_text + " " + args.page_url).lower()
+        if "1688" in text or "阿里" in text:
+            platform = "ali1688"
+        else:
+            platform = "pdd"
     platform_spec = registry["platforms"][platform]
+    tasks = list(platform_spec["tasks"].keys())
+    task = args.task if args.task in tasks else tasks[0]
     task_spec = platform_spec["tasks"][task]
     intent = infer_intent(args.request_text) if args.intent == "auto" else args.intent
     load_order = [
