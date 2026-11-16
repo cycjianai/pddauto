@@ -240,19 +240,52 @@ export function prefilterSearchOffers(offers, pendingRows, maxReturn = 5) {
 }
 
 export class PersistentCdpSession {
-  constructor(wsUrl) {
-    this.wsUrl = wsUrl;
+  constructor(wsUrlOrTabId) {
+    if (typeof wsUrlOrTabId === "string" && wsUrlOrTabId.startsWith("ws://")) {
+      this.wsUrl = wsUrlOrTabId;
+      this.tabId = null;
+    } else {
+      this.tabId = wsUrlOrTabId;
+      this.wsUrl = null;
+    }
     this.ws = null;
     this.seq = 1;
     this.pending = new Map();
   }
 
   async connect() {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+    if (this.ws) {
+      try { this.ws.close(); } catch {}
+      this.ws = null;
+    }
+
+    if (this.tabId || !this.wsUrl) {
+      const tabs = await (await fetch(`${CDP_HTTP}/json/list`)).json();
+      let tab = this.tabId ? tabs.find((t) => t.id === this.tabId) : null;
+      if (!tab) {
+        tab = tabs.find((t) => t.type === "page" && t.url.includes("1688.com"));
+      }
+      if (!tab) {
+        tab = tabs.find((t) => t.type === "page" && !t.url.includes("qnh.meituan.com"));
+      }
+      if (!tab) throw new Error("未找到可用的 1688 Chrome 标签页");
+      this.tabId = tab.id;
+      this.wsUrl = tab.webSocketDebuggerUrl;
+    }
+
     this.ws = new WebSocket(this.wsUrl);
     await new Promise((resolve, reject) => {
-      this.ws.addEventListener("open", resolve, { once: true });
-      this.ws.addEventListener("error", reject, { once: true });
+      const onOpen = () => { cleanup(); resolve(); };
+      const onErr = (e) => { cleanup(); reject(e); };
+      const cleanup = () => {
+        this.ws?.removeEventListener("open", onOpen);
+        this.ws?.removeEventListener("error", onErr);
+      };
+      this.ws.addEventListener("open", onOpen);
+      this.ws.addEventListener("error", onErr);
     });
+
     this.ws.addEventListener("message", (ev) => {
       try {
         const msg = JSON.parse(String(ev.data));
@@ -264,14 +297,41 @@ export class PersistentCdpSession {
         }
       } catch {}
     });
+
+    this.ws.addEventListener("close", () => {
+      for (const [id, { reject }] of this.pending.entries()) {
+        reject(new Error("WebSocket closed"));
+      }
+      this.pending.clear();
+      this.ws = null;
+    });
+
+    this.ws.addEventListener("error", () => {
+      for (const [id, { reject }] of this.pending.entries()) {
+        reject(new Error("WebSocket error"));
+      }
+      this.pending.clear();
+      this.ws = null;
+    });
+
+    try {
+      await this.rawSend("Page.enable", {}, 5000);
+      await this.rawSend("DOM.enable", {}, 5000);
+      await this.rawSend("Runtime.enable", {}, 5000);
+    } catch {}
   }
 
-  send(method, params = {}, timeoutMs = 45000) {
+  rawSend(method, params = {}, timeoutMs = 25000) {
     return new Promise((resolve, reject) => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        return reject(new Error("WebSocket not open"));
+      }
       const id = this.seq++;
       const timer = setTimeout(() => {
         if (this.pending.has(id)) {
           this.pending.delete(id);
+          try { this.ws?.close(); } catch {}
+          this.ws = null;
           reject(new Error(`CDP timeout: ${method}`));
         }
       }, timeoutMs);
@@ -285,8 +345,30 @@ export class PersistentCdpSession {
           reject(err);
         },
       });
-      this.ws.send(JSON.stringify({ id, method, params }));
+      try {
+        this.ws.send(JSON.stringify({ id, method, params }));
+      } catch (err) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(err);
+      }
     });
+  }
+
+  async send(method, params = {}, timeoutMs = 25000) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      await this.connect();
+    }
+    try {
+      return await this.rawSend(method, params, timeoutMs);
+    } catch (e) {
+      if (e.message.includes("CDP timeout") || e.message.includes("closed") || e.message.includes("not open")) {
+        console.warn(`[CDP Auto-Recover] ${method} interrupted (${e.message}), reconnecting CDP...`);
+        await this.connect();
+        return await this.rawSend(method, params, timeoutMs);
+      }
+      throw e;
+    }
   }
 
   async evalJs(expression, userGesture = false) {
@@ -295,7 +377,7 @@ export class PersistentCdpSession {
       returnByValue: true,
       awaitPromise: true,
       userGesture,
-    });
+    }, 20000);
     if (res?.exceptionDetails) {
       console.error("[evalJs Exception]", res.exceptionDetails.text, res.exceptionDetails.exception?.description);
     }
@@ -306,6 +388,7 @@ export class PersistentCdpSession {
     try {
       this.ws?.close();
     } catch {}
+    this.ws = null;
   }
 }
 
@@ -320,10 +403,16 @@ async function ensureDefaultDownloadBehavior() {
   }
 }
 
+const DASHBOARD_SCRIPT_PATH = "/Users/cenbusi/Desktop/原点项目-S1/.agents/skills/procurement-sourcing/scripts/export_visual_audit_html.py";
+
 function flushToExcel() {
   try {
     const out = execSync(`python3 "${FLUSH_SCRIPT_PATH}"`, { encoding: "utf8", timeout: 40000 });
     console.log(out.trim());
+    try {
+      const dbOut = execSync(`python3 "${DASHBOARD_SCRIPT_PATH}"`, { encoding: "utf8", timeout: 30000 });
+      console.log(dbOut.trim().split("\n")[0]);
+    } catch {}
   } catch (e) {
     console.error("[Excel] Flush error:", e.message);
   }
@@ -911,12 +1000,8 @@ async function main() {
   const tab = tabs.find((t) => t.type === "page" && t.url.includes("1688.com"));
   if (!tab) throw new Error("未找到已登录的 1688 Chrome 标签页");
 
-  const pageSession = new PersistentCdpSession(tab.webSocketDebuggerUrl);
-  pageSession.tabId = tab.id;
+  const pageSession = new PersistentCdpSession(tab.id);
   await pageSession.connect();
-  await pageSession.send("Page.enable");
-  await pageSession.send("DOM.enable");
-  await pageSession.send("Runtime.enable");
   try {
     await pageSession.send("Emulation.setFocusEmulationEnabled", { enabled: true });
     await pageSession.send("Page.setWebLifecycleState", { state: "active" });

@@ -162,15 +162,24 @@ def main() -> int:
         if store_pic:
             ws.cell(row=row, column=cols["store_pic"], value=store_pic)
 
-        raw_price = q.get("basicPrice") or q.get("suggestPrice") or (r.get("retail_price") if r else 0)
-        if isinstance(raw_price, dict):
-            raw_price = raw_price.get("tenantSuggestPrice", {}).get("unifiedSuggestPrice", 0)
-        try:
-            cur_p = float(raw_price)
-            if cur_p > 0:
-                ws.cell(row=row, column=cols["current_price"], value=round(cur_p, 2))
-        except:
-            pass
+        p_candidates = [
+            q.get("suggestPrice"),
+            q.get("basicPrice"),
+            r.get("retail_price") if r else None
+        ]
+        cur_p = 0.0
+        for cand in p_candidates:
+            if isinstance(cand, dict):
+                cand = cand.get("tenantSuggestPrice", {}).get("unifiedSuggestPrice")
+            try:
+                val = float(cand or 0)
+                if val > 0:
+                    cur_p = val
+                    break
+            except:
+                pass
+        if cur_p > 0:
+            ws.cell(row=row, column=cols["current_price"], value=round(cur_p, 2))
 
         # 2. 匹配成功的行：写入供货商品链接、规格、结算链接、比例与公式
         if r and r.get("status") == "MATCHED":
