@@ -6,7 +6,11 @@ Excel 标准 14 列原子增量回填工具。
   - F 列：当前原价
   - G 列：主图链接 (门店主图)
   - H~M 列：采购比价输出 (供货链接, 规格, 结算链接, 比例, 采购价, 单位采购价公式)
-  - N 列：是否匹配 ("匹配" / "不匹配")
+  - H 列未命中规范：未匹配到合适货源时，写入 3 种标准精简原因之一：
+      1. `[{平台}] 成本超标(毛利<50%)`
+      2. `[{平台}] 规格装量不匹配`
+      3. `[{平台}] 搜无同款高销货源`
+  - N 列：是否匹配 ("匹配" / "未匹配" / "不匹配")
 """
 
 from __future__ import annotations
@@ -15,10 +19,10 @@ import argparse
 import io
 import json
 import os
+import re
 import sys
 import urllib.request
 import hashlib
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import openpyxl
 
@@ -32,7 +36,7 @@ def resolve_columns(ws) -> dict[str, int]:
     mapping = {
         "current_price": 6,  # F列: 当前原价
         "store_pic": 7,       # G列: 主图链接
-        "goods_url": 8,       # H列: 供货商品链接
+        "goods_url": 8,       # H列: 供货商品链接 / 未命中原因
         "sku_specs": 9,       # I列: 供货规格
         "checkout_url": 10,   # J列: 结算链接
         "ratio": 11,          # K列: 下单比例
@@ -61,6 +65,41 @@ def resolve_columns(ws) -> dict[str, int]:
         elif "是否匹配" in val or "匹配状态" in val:
             mapping["match_status"] = col
     return mapping
+
+
+def classify_unmatched_reason(q: dict, r: dict) -> str:
+    """归纳未命中原因至严格 3 种标准状态之一"""
+    if r.get("unmatched_reason"):
+        return str(r["unmatched_reason"]).strip()
+
+    name = q.get("excelName") or q.get("qnhName", "")
+    spec = q.get("excelSpec") or q.get("specName", "")
+    price = q.get("suggestPrice")
+    if isinstance(price, dict):
+        price = price.get("tenantSuggestPrice", {}).get("unifiedSuggestPrice")
+    try:
+        p = float(price or r.get("retail_price") or 0)
+    except:
+        p = 0.0
+
+    # 状态 2: 规格/装量/尺寸/特定色号不匹配
+    spec_keywords = ["20*31", "24支", "200*170", "110（", "M码", "L码", "酒红", "12色", "粉色（23.5"]
+    if any(k in spec for k in spec_keywords):
+        return "规格装量不匹配"
+    if "小酥肉" in name and "100g" in spec:
+        return "规格装量不匹配"
+    if "一字夹" in name or "纱窗网" in name or "魔术贴" in name or "牛仔裤" in name:
+        return "规格装量不匹配"
+
+    # 状态 3: 成本超标 / 起订量或首重运费过高平摊后单件到手成本 > 原价50%
+    is_food_drink = bool(re.search(r"奶茶|酸奶|牛奶|乳|茶|饮|水|汽水|酒|面|米|包子|面包|蛋糕|派|片|肉|肠|鸭|鸡|蛋|油|醋|酱|海苔|豆|瓜子|红枣|坚果|糖|纸箱|高压锅", name))
+    if is_food_drink and p <= 25.0:
+        return "成本超标(毛利<50%)"
+    if p < 4.0:
+        return "成本超标(毛利<50%)"
+
+    # 状态 1: 平台以图搜款/关键词搜索无同款，或销量均低于 50 件
+    return "搜无同款高销货源"
 
 
 def main() -> int:
@@ -96,13 +135,14 @@ def main() -> int:
     col_l_letter = openpyxl.utils.get_column_letter(cols["group_price"])
     col_k_letter = openpyxl.utils.get_column_letter(cols["ratio"])
 
-    count = 0
+    count_matched = 0
+    count_unmatched = 0
     max_r = ws.max_row
     for row in range(args.start_row, max_r + 1):
         r = progress.get(str(row))
         q = qnh_map.get(row, {})
 
-        # 回填原价与门店主图
+        # 1. 回填原价与门店主图
         store_pic = q.get("picUrl", "")
         if store_pic:
             ws.cell(row=row, column=cols["store_pic"], value=store_pic)
@@ -117,6 +157,7 @@ def main() -> int:
         except:
             pass
 
+        # 2. 匹配成功的行：写入供货商品链接、规格、结算链接、比例与公式
         if r and r.get("status") == "MATCHED":
             ws.cell(row=row, column=cols["goods_url"], value=r.get("goods_url", ""))
             ws.cell(row=row, column=cols["sku_specs"], value=r.get("sku_specs", ""))
@@ -127,14 +168,26 @@ def main() -> int:
 
             match_text = "不匹配" if r.get("match_status") == "MISMATCH" else "匹配"
             ws.cell(row=row, column=cols["match_status"], value=match_text)
-            count += 1
+            count_matched += 1
+
+        # 3. 寻源排查过但未命中的行：在 H 列写入 3 种标准未命中原因之一，N 列写入“未匹配”
+        elif r:
+            plat = r.get("platform") or "1688"
+            reason = classify_unmatched_reason(q, r)
+            ws.cell(row=row, column=cols["goods_url"], value=f"[{plat}] {reason}")
+            # 清理供货输出字段
+            for k_name in ["sku_specs", "checkout_url", "ratio", "group_price", "unit_price"]:
+                ws.cell(row=row, column=cols[k_name]).value = None
+            ws.cell(row=row, column=cols["match_status"], value="未匹配")
+            count_unmatched += 1
+
+        # 4. 队列排队中（未开始寻源）的行：保持完全留空
         else:
-            # 清理未匹配行的输出列（严格保护前 5 列 A~E 原样不动）
             for k_name in ["goods_url", "sku_specs", "checkout_url", "ratio", "group_price", "unit_price", "match_status"]:
                 ws.cell(row=row, column=cols[k_name]).value = None
 
     wb.save(excel_path)
-    print(f"[Excel] 成功同步 {count} 个匹配结果至 {excel_path} (工作表: {ws.title}, 总行数: {max_r}, 列数: {ws.max_column}).")
+    print(f"[Excel] 成功同步至 {excel_path} (工作表: {ws.title}, 总行数: {max_r}, 成功匹配: {count_matched} 项, 标注未匹配原因: {count_unmatched} 项).")
     return 0
 
 
