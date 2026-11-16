@@ -17,21 +17,35 @@ import { execFileSync, execSync } from "node:child_process";
 
 const PORT = process.env.AUDIT_PORT ? parseInt(process.env.AUDIT_PORT, 10) : 8899;
 const PROGRESS_PATH = "/tmp/pdd_sourcing_progress.json";
-const EXCEL_PATH = "/Users/cenbusi/Desktop/2743.xlsx";
-const HTML_PATH = "/Users/cenbusi/Desktop/sourcing_audit_dashboard.html";
+
+function getExcelPath() {
+  if (fs.existsSync("/Users/cenbusi/Desktop/当前工作/2743.xlsx")) {
+    return "/Users/cenbusi/Desktop/当前工作/2743.xlsx";
+  }
+  return "/Users/cenbusi/Desktop/2743.xlsx";
+}
+
+function getHtmlPath() {
+  if (fs.existsSync("/Users/cenbusi/Desktop/当前工作/sourcing_audit_dashboard.html")) {
+    return "/Users/cenbusi/Desktop/当前工作/sourcing_audit_dashboard.html";
+  }
+  return "/Users/cenbusi/Desktop/sourcing_audit_dashboard.html";
+}
+
 const SCRIPT_DIR = path.dirname(new URL(import.meta.url).pathname);
 const EXPORT_SCRIPT = path.join(SCRIPT_DIR, "export_visual_audit_html.py");
 
 // 单行原子更新 Excel 第 14 列 (N列)
 function updateExcelCell(rowNum, matchStatus) {
+  const excelPath = getExcelPath();
   const text = matchStatus === "MISMATCH" ? "不匹配" : "匹配";
   const pyCode = `
 import openpyxl, sys
 try:
-    wb = openpyxl.load_workbook("${EXCEL_PATH}")
+    wb = openpyxl.load_workbook("${excelPath}")
     ws = wb.active
     ws.cell(row=${rowNum}, column=14, value="${text}")
-    wb.save("${EXCEL_PATH}")
+    wb.save("${excelPath}")
     print("OK")
 except Exception as e:
     print(f"ERR: {e}", file=sys.stderr)
@@ -154,9 +168,10 @@ const server = http.createServer((req, res) => {
 
   // 4. 默认主页：直接提供看板页面
   if (pathname === "/" || pathname === "/dashboard") {
-    if (fs.existsSync(HTML_PATH)) {
+    const htmlPath = getHtmlPath();
+    if (fs.existsSync(htmlPath)) {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      fs.createReadStream(HTML_PATH).pipe(res);
+      fs.createReadStream(htmlPath).pipe(res);
       return;
     }
   }
@@ -170,6 +185,6 @@ server.listen(PORT, "127.0.0.1", () => {
   console.log(`★ 供应链比价核验实时交互服务已启动!`);
   console.log(`  - 本地直达地址: http://127.0.0.1:${PORT}`);
   console.log(`  - API 端点: http://127.0.0.1:${PORT}/api/toggle-match?row={row}&status={MATCH|MISMATCH}`);
-  console.log(`  - 同步目标文件: ${EXCEL_PATH} (第 14 列 N列: 是否匹配)`);
+  console.log(`  - 同步目标文件: ${getExcelPath()} (第 14 列 N列: 是否匹配)`);
   console.log(`====================================================`);
 });

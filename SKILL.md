@@ -3,9 +3,9 @@ name: pddauto
 description: 拼多多与1688上游供应链采购寻源、牵牛花全店SPU高清主图/副图自动并发抓取、以图搜图多主体修正与YOLO选框自愈、高销源头工厂严选、基础包装语义对齐（拒绝单片错算）、单标签防风控自愈（55秒滑块自然冷却、阻断营销活动推广页穿透）、14列表格标准架构及可视化直检看板同源实时同步全流程 Skill。
 ---
 
-# 拼多多与 1688 供应链自动化寻源与比价治理 Skill (pddauto v2.3.1)
+# 拼多多与 1688 供应链自动化寻源与比价治理 Skill (pddauto v2.3.2)
 
-本 Skill 专用于即时零售闪电仓与多渠道货盘的**跨平台（美团牵牛花全店 SPU 主图抓取 + 1688 源头工厂 + 拼多多单件包邮）全流程自动化采购寻源、同 SPU 多规格聚合比价、相似品多模态核验、标准 14 列工作簿原子回填（C 列分配人、D 列商品名称只读保护，含 H 列 3 种标准未命中原因精炼归纳与 N 列未匹配协同）、以及可视化看板同源实时双向同步**。
+本 Skill 专用于即时零售闪电仓与多渠道货盘的**跨平台（美团牵牛花全店 SPU 主图抓取 + 1688 源头工厂 + 拼多多单件包邮）全流程自动化采购寻源、同 SPU 多规格聚合比价、相似品多模态核验、标准 14 列工作簿原子回填（C 列分配人、D 列商品名称只读保护，含 H 列 3 种标准未命中原因精炼归纳与 N 列未匹配协同）、桌面【当前工作】目录自适应同步、以及可视化看板同源实时双向同步**。
 
 ---
 
@@ -19,18 +19,23 @@ flowchart TD
     Phase2 -->|"未登录"| PromptUser["📢 交互引导用户登录<br>• 牵牛花: 登录并切到指定门店<br>• 1688: 登录采购账号<br>提示完成后重新运行"]
     Phase2 -->|"已登录"| Phase3["📸 Phase 3: SPU 主图与多规格并发抓取<br>• 自动读取待比价 Excel (SPUID/SKUID)<br>• 在牵牛花页面上下文分批直调内部接口<br>• 提取高清主图 (picUrl) + 零售价 (suggestPrice)<br>• 秒级生成本地结构化元数据缓存"]
 
-    Phase3 --> Phase4["🏭 Phase 4: 1688 & 拼多多自动化比价寻源<br>• 非标百货强制以图搜款优先<br>• YOLO 多候选主体切换与框选自愈<br>• 几万/几千头部高销量实力工厂严选<br>• 包装语义层级对齐 (80片 vs 240片=3包)<br>• 单标签防爆内存 + 55秒滑块自然冷却自愈"]
+    Phase3 --> Phase4["🏭 Phase 4: 1688 & 拼多多自动化比价寻源<br>• 任务聚焦 Row 2..1791 (最后1000个SKU分工排除)<br>• 非标百货强制以图搜款优先 + YOLO 选框自愈<br>• 几万/几千头部高销量实力工厂严选<br>• 包装语义层级对齐 (80片 vs 240片=3包)<br>• 单标签防爆内存 + 55秒滑块自然冷却自愈"]
 
-    Phase4 --> Phase5["📊 Phase 5: Excel 标准 14 列原子增量回填<br>• 严格保护 A~E 前五列（含 C 列分配人、D 列商品名称）只读不动<br>• F 列当前原价、G 列主图链接<br>• H 列：命中填供货链接，未命中填 3 种标准原因之一<br>• I~M 列：匹配时回填规格、结算链接、比例与公式<br>• N 列：匹配填'匹配'，未命中填'未匹配'"]
+    Phase4 --> Phase5["📊 Phase 5: Excel 标准 14 列原子增量回填<br>• 优先同步至桌面【当前工作】/2743.xlsx<br>• 严格保护 A~E 前五列（含 C 列分配人、D 列商品名称）只读不动<br>• F 列当前原价、G 列主图链接<br>• H 列：命中填供货链接，未命中填 3 种标准原因之一<br>• I~M 列：匹配时回填规格、结算链接、比例与公式<br>• N 列：匹配填'匹配'，未命中填'未匹配'"]
 
-    Phase5 --> Phase6["🖥️ Phase 6: 可视化直检看板与同源实时同步<br>• node scripts/audit_server.mjs (监听 8899)<br>• 双列高清大图直观对照 (避免点击导致风控)<br>• 卡片点击【❌ 匹配错误】一秒联动改写 Excel N 列为'不匹配'"]
+    Phase5 --> Phase6["🖥️ Phase 6: 可视化直检看板与同源实时同步<br>• node scripts/audit_server.mjs (监听 8899)<br>• 自动定位【当前工作】/sourcing_audit_dashboard.html<br>• 卡片点击【❌ 匹配错误】一秒联动改写 Excel N 列为'不匹配'"]
 ```
 
 ---
 
-## 二、 工作簿标准 14 列布局合同（严格遵循）
+## 二、 工作簿标准 14 列布局合同与分工范围（严格遵循）
 
-工作簿严格维护 14 列标准架构，绝对禁止篡改前五列：
+### 1. 任务分工与处理范围
+- **总商品规模**：2,790 个 SKU（行号 2 ~ 2,791）。
+- **协同分工约定**：**最后 1,000 个 SKU（行号 1,792 ~ 2,791）已分配给协同人员跟进**，本自动化任务严格截止在 **第 1,791 行**（处理前 1,790 个 SKU），严禁覆盖或改动 1,792 行之后的任何数据。
+- **存储路径**：优先同步至桌面【当前工作】目录：`/Users/cenbusi/Desktop/当前工作/2743.xlsx`。
+
+### 2. 标准 14 列架构清单
 
 | 列号 | 列名 | 职责与属性 | 写入规则 / 计算公式 / 异常标识 |
 | :---: | :---: | :---: | :--- |
@@ -74,10 +79,11 @@ flowchart TD
 ### 1. 架构与运行
 - **交互同步服务**：`node scripts/audit_server.mjs`
   - 默认监听 `http://127.0.0.1:8899`，支持跨域 CORS。
+  - 自动定位 `/Users/cenbusi/Desktop/当前工作/2743.xlsx`。
   - 提供 `/api/toggle-match?row={row}&status={MATCH|MISMATCH}` API。
-  - 接收到请求后，立即原子更新本地进度缓存，并在 **0.2 秒内** 增量改写 `2743.xlsx` 对应行的第 14 列（N 列【是否匹配】）。
+  - 接收到请求后，立即原子更新本地进度缓存，并在 **0.2 秒内** 增量改写工作簿对应行的第 14 列（N 列【是否匹配】）。
 - **看板生成器**：`python3 scripts/export_visual_audit_html.py`
-  - 自动将进度与 QNH 零售数据融合，导出单文件看板 `Desktop/sourcing_audit_dashboard.html`。
+  - 导出单文件看板至 `/Users/cenbusi/Desktop/当前工作/sourcing_audit_dashboard.html`（聚焦前 1,791 行）。
   - 用户可直接在浏览器中访问 `http://127.0.0.1:8899` 或双击打开本地 HTML 文件。
 
 ### 2. 卡片双列对比与极速审核体验
@@ -101,8 +107,8 @@ flowchart TD
 
 ### 步骤 1：一键启动全流程主控脚本
 ```bash
-# 启动工作流（支持传入自定义 Excel 工作簿路径，未传时默认读取桌面表格）
-node scripts/start_procurement_workflow.mjs /path/to/your_store_spus.xlsx
+# 启动工作流（支持传入自定义 Excel 工作簿路径，未传时默认读取桌面【当前工作】表格）
+node scripts/start_procurement_workflow.mjs
 ```
 
 ### 步骤 2：环境自启与账号登录就绪
@@ -118,7 +124,7 @@ node scripts/start_procurement_workflow.mjs /path/to/your_store_spus.xlsx
   > 完成登录后，重新执行命令即可自动开始作业！”
 
 ### 步骤 3：自动高速抓取 SPU 主图与多规格详情（无需人工下载图片）
-- 登录就绪后，脚本自动读取 Excel 表格中的全部待比价行；
+- 登录就绪后，脚本自动读取 Excel 表格中的待比价行；
 - 依附到牵牛花页面，直接在页面会话上下文调用内部轻量级接口（`/qnh-gw3/api/product/tenant/page-query`），以 100 件/批的高并发分批直提：
   - 提取每个 SPU 的高清主图 URL（`picUrl`）；
   - 提取全量副图数组（`allPics`，主图命中不准时自动切换副图）；
@@ -128,7 +134,7 @@ node scripts/start_procurement_workflow.mjs /path/to/your_store_spus.xlsx
 ### 步骤 4：全自动高销以图搜款、包装对齐与 Excel 原子回填
 - 自动拉起 1688 单标签引擎，逐个 SPU 进行视觉搜索；
 - 自动执行 YOLO 多主体框选修正、几万高销工厂筛选、基础包装语义对齐（家庭装 80 片 vs 240片/480片）；
-- 实时通过 `openpyxl` 将标准 14 列增量回填至原工作簿（未匹配商品写入 3 大标准原因之一）。
+- 实时通过 `openpyxl` 将标准 14 列增量回填至桌面【当前工作】/2743.xlsx（到达 1791 行自动结束）。
 
 ### 步骤 5：启动可视化看板进行极速质检
 ```bash
@@ -169,9 +175,9 @@ node scripts/audit_server.mjs
 1. **核心脚本库**：
    - 主控流程启动脚本：`scripts/start_procurement_workflow.mjs`
    - 牵牛花全店主图提取引擎：`scripts/qnh_spu_extractor.mjs`
-   - 1688 高销单标签寻源 Worker：`scripts/ali1688_sourcing_worker.mjs`
-   - 标准 14 列原子写入器（含 3 大未命中原因写入）：`scripts/flush_excel.py`
-   - 可视化看板生成器：`scripts/export_visual_audit_html.py`
+   - 1688 高销单标签寻源 Worker：`scripts/ali1688_sourcing_worker.mjs`（带 MAX_ROW=1791 自动截止）
+   - 标准 14 列原子写入器：`scripts/flush_excel.py`（自动定位【当前工作】/2743.xlsx）
+   - 可视化看板生成器：`scripts/export_visual_audit_html.py`（输出至【当前工作】目录）
    - 实时交互与 Excel 同步服务：`scripts/audit_server.mjs`
 2. **平台与底层通道规范**：
    - 1688 单标签防风控与 55s 滑块自愈：[`references/platforms/ali1688-sourcing-playbook.md`](references/platforms/ali1688-sourcing-playbook.md)

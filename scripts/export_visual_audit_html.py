@@ -16,7 +16,16 @@ from pathlib import Path
 
 PROGRESS_PATH = "/tmp/pdd_sourcing_progress.json"
 QNH_PATH = "/tmp/qnh_all_details_fixed.json"
-OUTPUT_HTML = "/Users/cenbusi/Desktop/sourcing_audit_dashboard.html"
+MAX_TARGET_ROW = 1791  # 最后 1000 个 SKU (1792~2791行) 已分配他人，本看板严格聚焦前 1791 行
+
+
+def get_default_html_output() -> str:
+    if os.path.isdir("/Users/cenbusi/Desktop/当前工作"):
+        return "/Users/cenbusi/Desktop/当前工作/sourcing_audit_dashboard.html"
+    return "/Users/cenbusi/Desktop/sourcing_audit_dashboard.html"
+
+
+OUTPUT_HTML = get_default_html_output()
 
 
 def extract_retail_price(q: dict, v: dict) -> float:
@@ -42,6 +51,7 @@ def main() -> int:
     parser.add_argument("--progress", default=PROGRESS_PATH, help="比对进度 JSON 路径")
     parser.add_argument("--qnh", default=QNH_PATH, help="牵牛花商品元数据 JSON 路径")
     parser.add_argument("--output", default=OUTPUT_HTML, help="输出 HTML 文件路径")
+    parser.add_argument("--max-row", type=int, default=MAX_TARGET_ROW, help=f"最大收录行号（默认 {MAX_TARGET_ROW}，最后 1000 个 SKU 已分配他人）")
     args = parser.parse_args()
 
     if not os.path.isfile(args.progress):
@@ -60,6 +70,12 @@ def main() -> int:
 
     matched_items = []
     for k, v in progress.items():
+        try:
+            row_num = int(k)
+        except:
+            continue
+        if row_num > args.max_row:
+            continue
         if v.get("status") == "MATCHED":
             q = qnh_map.get(str(k), {})
             retail_p = extract_retail_price(q, v)

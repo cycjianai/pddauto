@@ -2,7 +2,7 @@
 """
 Excel 标准 14 列原子增量回填工具。
 严格遵循：
-  - A~E 列只读保护：SPUID, SKUID, 门店名称, 分配人, 规格名称
+  - A~E 列只读保护：SPUID, SKUID, 分配人, 商品名称, 规格名称
   - F 列：当前原价
   - G 列：主图链接 (门店主图)
   - H~M 列：采购比价输出 (供货链接, 规格, 结算链接, 比例, 采购价, 单位采购价公式)
@@ -11,6 +11,8 @@ Excel 标准 14 列原子增量回填工具。
       2. `[{平台}] 规格装量不匹配`
       3. `[{平台}] 搜无同款高销货源`
   - N 列：是否匹配 ("匹配" / "未匹配" / "不匹配")
+  - 任务范围控制：最后 1000 个 SKU (1792~2791行) 已分配他人，本脚本严格限制在 1791 行以内，不改动后续分配行。
+  - 路径自适应：优先读取桌面【当前工作】目录下的 2743.xlsx。
 """
 
 from __future__ import annotations
@@ -26,9 +28,20 @@ import hashlib
 from pathlib import Path
 import openpyxl
 
-EXCEL_PATH = "/Users/cenbusi/Desktop/2743.xlsx"
+DEFAULT_EXCEL_PATHS = [
+    "/Users/cenbusi/Desktop/当前工作/2743.xlsx",
+    "/Users/cenbusi/Desktop/2743.xlsx",
+]
 PROGRESS_PATH = "/tmp/pdd_sourcing_progress.json"
 QNH_PATH = "/tmp/qnh_all_details_fixed.json"
+MAX_TARGET_ROW = 1791  # 2791 - 1000 = 1791 (最后 1000 个 SKU 已分配他人)
+
+
+def get_default_excel_path() -> str:
+    for p in DEFAULT_EXCEL_PATHS:
+        if os.path.isfile(p):
+            return p
+    return DEFAULT_EXCEL_PATHS[0]
 
 
 def resolve_columns(ws) -> dict[str, int]:
@@ -107,9 +120,10 @@ def main() -> int:
     parser.add_argument("--excel", default="", help="目标 Excel 文件路径")
     parser.add_argument("--progress", default=PROGRESS_PATH, help="进度元数据 JSON 路径")
     parser.add_argument("--start-row", type=int, default=49, help="开始回填行号（默认 49）")
+    parser.add_argument("--max-row", type=int, default=MAX_TARGET_ROW, help=f"最大回填行号（默认 {MAX_TARGET_ROW}）")
     args = parser.parse_args()
 
-    excel_path = args.excel or os.environ.get("EXCEL_PATH") or EXCEL_PATH
+    excel_path = args.excel or os.environ.get("EXCEL_PATH") or get_default_excel_path()
     if not os.path.isfile(excel_path):
         print(f"[Excel] 找不到工作簿: {excel_path}", file=sys.stderr)
         return 1
@@ -137,8 +151,9 @@ def main() -> int:
 
     count_matched = 0
     count_unmatched = 0
-    max_r = ws.max_row
-    for row in range(args.start_row, max_r + 1):
+    limit_r = min(ws.max_row, args.max_row)
+
+    for row in range(args.start_row, limit_r + 1):
         r = progress.get(str(row))
         q = qnh_map.get(row, {})
 
@@ -187,7 +202,7 @@ def main() -> int:
                 ws.cell(row=row, column=cols[k_name]).value = None
 
     wb.save(excel_path)
-    print(f"[Excel] 成功同步至 {excel_path} (工作表: {ws.title}, 总行数: {max_r}, 成功匹配: {count_matched} 项, 标注未匹配原因: {count_unmatched} 项).")
+    print(f"[Excel] 成功同步至 {excel_path} (工作表: {ws.title}, 范围: Row {args.start_row}..{limit_r}, 成功匹配: {count_matched} 项, 标注未匹配原因: {count_unmatched} 项).")
     return 0
 
 
