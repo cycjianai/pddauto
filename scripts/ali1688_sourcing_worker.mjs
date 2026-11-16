@@ -8,12 +8,33 @@ import {
   detectKnownBrand,
 } from "./pdd_phone_worker_v3.mjs";
 
-const QNH_FIXED_PATH = "/Users/cenbusi/.gemini/antigravity/brain/da210e82-b25c-40ef-abb7-464dde2672c8/scratch/qnh_all_details_fixed.json";
-const PROGRESS_PATH = "/tmp/pdd_sourcing_progress.json";
-const PROGRESS_BACKUP_PATH = "/Users/cenbusi/.gemini/antigravity/brain/da210e82-b25c-40ef-abb7-464dde2672c8/scratch/pdd_sourcing_progress_live.json";
-const FLUSH_SCRIPT_PATH = "/Users/cenbusi/.gemini/antigravity/brain/da210e82-b25c-40ef-abb7-464dde2672c8/scratch/flush_excel.py";
+const QNH_FIXED_PATH =
+  process.env.QNH_DETAILS_PATH ||
+  "/Users/cenbusi/.gemini/antigravity/brain/da210e82-b25c-40ef-abb7-464dde2672c8/scratch/qnh_all_details_fixed.json";
+const PROGRESS_PATH = process.env.PROGRESS_PATH || "/tmp/pdd_sourcing_progress.json";
+const PROGRESS_BACKUP_PATH =
+  process.env.PROGRESS_BACKUP_PATH ||
+  "/Users/cenbusi/.gemini/antigravity/brain/da210e82-b25c-40ef-abb7-464dde2672c8/scratch/pdd_sourcing_progress_live.json";
+const FLUSH_SCRIPT_PATH = new URL("./flush_excel.py", import.meta.url).pathname;
 const TMP_IMG_PATH = "/tmp/ali1688_cur_query.jpg";
-const CDP_HTTP = "http://127.0.0.1:9224";
+
+let CDP_HTTP = process.env.CDP_HTTP || (process.env.CDP_PORT ? `http://127.0.0.1:${process.env.CDP_PORT}` : "");
+
+export async function ensureCdpHttp() {
+  if (CDP_HTTP) return CDP_HTTP;
+  for (const port of [9224, 9222, 9223, 9225]) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(600) });
+      if (res.ok) {
+        CDP_HTTP = `http://127.0.0.1:${port}`;
+        console.log(`[CDP] 自动探测并连入 Chrome 调试端口: ${port} (${CDP_HTTP})`);
+        return CDP_HTTP;
+      }
+    } catch {}
+  }
+  CDP_HTTP = "http://127.0.0.1:9222";
+  return CDP_HTTP;
+}
 
 const LIMIT_SPUS = process.env.LIMIT_SPUS ? parseInt(process.env.LIMIT_SPUS, 10) : Infinity;
 const TARGET_ROW = process.env.TARGET_ROW ? parseInt(process.env.TARGET_ROW, 10) : null;
@@ -877,6 +898,7 @@ export async function inspect1688OfferDetail(pageSession, cand) {
 }
 
 async function main() {
+  await ensureCdpHttp();
   await ensureDefaultDownloadBehavior();
 
   const rawItems = JSON.parse(await fs.readFile(QNH_FIXED_PATH, "utf8"));

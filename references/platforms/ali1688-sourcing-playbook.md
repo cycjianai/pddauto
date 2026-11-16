@@ -1,18 +1,83 @@
 # 1688 与拼多多防风控与单标签内存保护手册 (Anti-Risk & Memory Playbook)
 
-## 1. 痛点根源分析
+## 一、 浏览器控制原理与反爬指纹规范
 
-在过去多轮批量测试中，主要暴露了两个严重破坏自动化运行的系统问题：
-1. **Chrome 标签页爆炸导致内存暴涨**：
-   - 1688 首页嵌入了许多全屏推广组件（例如“商机组货”、“跟风热卖”等），带有 `target="_blank"`。
-   - 当页面异步加载较慢时，通用的模糊选择器（如全局匹配 innerText 为“搜索”的按钮）容易点中 banner 卡片，从而在后台无限弹新标签页，最终占用数十 GB 内存，致使 Chrome 崩溃。
-2. **滑块验证码（Baxia / nc_1_n1z）频繁弹窗**：
-   - 当连续上传图片间隔过短（$< 10$ 秒）或请求被高频触发时，触发阿里云 WAF 安全风控。
-   - 人工介入或脚本乱拖会导致滑块被彻底锁死。
+### 1. 为什么坚决不用 Puppeteer / Selenium 的“测试浏览器”？
+普通自动化框架（如 Puppeteer、Playwright 默认模式、Selenium WebDriver）新启动浏览器时，会自动注入大量自动化测试特征：
+- `navigator.webdriver = true`
+- 窗口顶部显示“Chrome 正受到自动测试软件的控制”黄色横条
+- 缺失真实的 GPU 硬件渲染管线、标准声卡指纹和普通用户缓存
+- `window.chrome.runtime` 被篡改
 
-## 2. 单标签严格生命周期管控规范
+阿里巴巴 1688、拼多多以及美团牵牛花等平台的顶层 WAF 风控对自动化指纹极其敏感。一旦检测到带有 WebDriver 标记的会话，会瞬间判定为高危爬虫，触发永久性滑块拦截甚至直接拒绝服务。
 
-为彻底杜绝标签页爆炸，必须实施以下三层闭环防护：
+### 2. 标准生产浏览器启动规程（真实原生 Chrome + CDP 依附）
+我们必须使用**系统原版安装的官方 Google Chrome**（`/Applications/Google Chrome.app`），通过开启远程调试端口（CDP，Chrome DevTools Protocol）进行白盒控制：
+
+```bash
+# 1. 检查 9222 端口是否已被占用
+lsof -i :9222
+
+# 2. 启动原生 Chrome（若 9222 被占用则顺延至 9223 或 9224）
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+  --remote-debugging-port=9222 \
+  --user-data-dir="/tmp/chrome_dev_session_9222" &
+```
+
+- **真实性**：该浏览器是 100% 正版的系统浏览器内核，`navigator.webdriver = undefined`，拥有完全真实的渲染环境与设备指纹，完美避开所有自动化标记检测。
+- **登录态持久化**：用户在此浏览器中扫码登录牵牛花与 1688 后，自动化脚本通过 WebSocket 依附（Attach）进入该标签页，直接复用已授权的登录 Cookie 与 Session。
+
+### 3. CDP 端口自适应嗅探机制（拒绝端口写死）
+在最新工具链中，脚本不再死认单个固定端口，而是通过 `ensureCdpHttp()` 实施自适应探测：
+```javascript
+export async function ensureCdpHttp() {
+  if (process.env.CDP_HTTP) return process.env.CDP_HTTP;
+  if (process.env.CDP_PORT) return `http://127.0.0.1:${process.env.CDP_PORT}`;
+  // 依次探测活跃的调试端口
+  for (const port of [9222, 9223, 9224, 9225]) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(600) });
+      if (res.ok) return `http://127.0.0.1:${port}`;
+    } catch {}
+  }
+  return "http://127.0.0.1:9222";
+}
+```
+
+---
+
+## 二、 表格输出字段规范与动态列映射（F~K 六列规范）
+
+### 1. 字段区域划分与数据契约
+
+工作簿分为“输入区”和“输出区”，严格遵循单向读写隔离：
+
+| 列号范围 | 区域属性 | 对应字段 | 权限与处理规则 |
+| :---: | :---: | :--- | :--- |
+| **A ~ E 列** | **原始输入区** | `SPUID`、`SKUID`、`门店名称`、`商品名称`、`规格名称` | **严格只读保护**：脚本严禁修改、覆盖或清空前 5 列任何数据（杜绝改动门店名称或条码）。 |
+| **F ~ K 列** | **采购输出区** | `供货商品链接`、`供货规格`、`结算链接`、`下单比例`、`采购价`、`单位采购价` | **自动化回填区**：匹配成功后写入，未命中时置空。最后一列为 Excel 动态公式 `=ROUND(J{r}/I{r}, 2)`。 |
+
+### 2. 标准 6 列详细数据字典
+- **F 列 (商品链接)**：供货源头商品详情页 URL（1688 `https://detail.1688.com/offer/{id}.html` 或 拼多多 `goods.html?goods_id={id}`）。
+- **G 列 (供货规格)**：供货商具体子规格名称。多级规格必须使用中文分号 `；` 隔开（例如：`蓝（牵引+胸背）；S（宽1.0长120CM）`）。
+- **H 列 (结算链接)**：拼多多为一键 checkout 链接（`order_checkout.html?goods_id=...&sku_id=...`），1688 为详情直购链接。
+- **I 列 (下单比例)**：换算倍率 $N$（如供货商规格为 240 片大包装，门店为 80 片/包，则比率为 3；整箱 24 罐则比率为 24）。
+- **J 列 (采购价)**：供货商当前规格的整件采购价格（元，保留 2 位小数）。
+- **K 列 (单位采购价)**：Excel 动态计算公式 `=ROUND(J{row}/I{row}, 2)`，自动根据总价与比例核算出最小销售单元的单价。
+
+### 3. 表头动态解析与行数自适应
+脚本 `flush_excel.py` 绝不依赖固定的列序号硬编码：
+1. **动态解析表头**：读取第 1 行表头内容，自动模糊匹配“商品链接”、“规格”、“结算”、“比例”、“采购价”、“单位采购价”，动态获取列索引。如果列位置被调换，程序自动按表头位置写入。
+2. **动态行数识别**：自动根据 `ws.max_row` 确定需要回填的有效范围，支持 500 行、2,700 行乃至数万行不同规模的表格。
+3. **保护基准模板**：默认保留前 48 行基准模板（可通过 `--start-row` 参数自由指定起始行）。
+
+---
+
+## 三、 单标签严格生命周期管控规范（防止标签页爆炸）
+
+在过去批量测试中，1688 首页嵌入了海量带有 `target="_blank"` 的营销推广 banner（如“商机组货”、“跟风热卖”等）。通用的模糊点击很容易点中这些推广卡片，在后台瞬间开出几十个标签页引发 Chrome 内存溢出。
+
+实施三层闭环防护：
 
 ### 防护 1：弹窗搜索按钮作用域深度隔离
 禁止在 `document` 全局查找搜索按钮。必须将搜索按钮严格限制在搜图专用的弹窗容器内：
@@ -37,11 +102,12 @@ window.open = (u) => { location.href = u; return window; };
 ```javascript
 export async function pruneExtraTabs(activeTabId) {
   try {
-    const tabs = await (await fetch('http://127.0.0.1:9224/json/list')).json();
+    const cdpUrl = await ensureCdpHttp();
+    const tabs = await (await fetch(`${cdpUrl}/json/list`)).json();
     for (const t of tabs) {
       // 保护美团牵牛花页面和当前正在操作的 1688 主活动页，其余临时衍生页立刻关闭
       if (t.type === "page" && t.id !== activeTabId && !t.url.includes("qnh.meituan.com")) {
-        await fetch(`http://127.0.0.1:9224/json/close/${t.id}`);
+        await fetch(`${cdpUrl}/json/close/${t.id}`);
       }
     }
   } catch {}
@@ -50,7 +116,7 @@ export async function pruneExtraTabs(activeTabId) {
 
 ---
 
-## 3. 55秒滑块自然冷却自愈机制
+## 四、 55 秒滑块自然冷却自愈机制
 
 实测证实的阿里巴巴滑块挑战自愈规律：
 - **核心机制**：滑块并非永久阻断，而是阿里云风控网关颁发给当前 IP 和会话的有界凭证挑战（有效期约 50~60 秒）。
@@ -58,31 +124,8 @@ export async function pruneExtraTabs(activeTabId) {
   - 严禁用脚本通过模拟 MouseEvent 或 CDP 暴力拖拽滑块（行为特征极度僵硬，100% 触发二次甚至三次拦截封禁）。
   - 严禁在滑块激活期间持续发起重试或网络请求。
 - **自动化自愈流程**：
-  ```javascript
-  async function ensureNoRiskWithAutoCooldown(pageSession) {
-    const hasSlider = await pageSession.evalJs(`Boolean(document.querySelector('.nc-container, #baxia-dialog-content, iframe[src*="punish"]'))`);
-    if (!hasSlider) return;
-
-    console.log(`[风控滑块触发] 检测到阿里风控拦截，启动 55s 自然冷却自愈...`);
-    // 严格静置 55 秒，等待风控挑战在服务端和前端令牌过期
-    await sleep(55000);
-
-    // 重新刷新页面
-    await pageSession.send("Page.reload", { ignoreCache: true });
-    await sleep(4000);
-
-    // 检查刷新后滑块是否消失
-    const stillRisk = await pageSession.evalJs(`Boolean(document.querySelector('.nc-container, #baxia-dialog-content, iframe[src*="punish"]'))`);
-    if (!stillRisk) {
-      console.log(`[风控自然自愈成功] 滑块已自动解除，恢复正常寻源业务!`);
-      return;
-    }
-  }
-  ```
-
----
-
-## 4. 平滑请求节流节奏 (Throttling)
-
-- 两次搜图上传时间间隔强制保证 $\ge 15$ 秒。
-- 详情页访问添加 800~1500ms 的随机鼠标微幅滑动和滚动抖动（Jitter），保持正常人工浏览特征。
+  1. 检测到滑块弹窗后，立刻停止任何点击与拖拽动作；
+  2. 保持当前页面静置挂起 **55 秒** 等待风控挑战超时降级；
+  3. 55 秒后直接执行 `location.reload()` 重新刷新页面；
+  4. 刷新后该滑块拦截挑战自动解除消失，会话无缝恢复正常操作！
+- **平滑频控保护**：两次搜图上传时间间隔强制保证 $\ge 15$ 秒。
