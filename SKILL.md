@@ -167,6 +167,11 @@ node scripts/audit_server.mjs
    - 1688 链接格式：`https://detail.1688.com/offer/{offerId}.html`。
 8. **价格单位防除以 100 陷阱**：
    - 拼多多 `sku.group_price` 原生已是以**元**为单位的字符串（如 `"33.90"`），严禁除以 100。
+9. **拼多多 Web 端反爬防护与免重复登录铁律（实测踩坑与工程实践硬指标）**：
+   - **绝对严禁自动化脚本执行 `Page.navigate` 强跳 `login.html`**：任何排查或探测逻辑必须严格只读检测，绝对不得擅自通过 CDP 导航把当前页面切入登录页，杜绝人为打断用户已建立的有效会话。
+   - **严禁短时间极速暴力换词导航**：拼多多移动端 H5 对 URL 高频刷新（如 1~2s 频繁切词）有极其敏感的风控拦截，短时间暴力刷词会直接触发 WAF 临时吊销会话，导致搜索返回空列表或退登。单次检索必须维持 **3.2s ~ 5.5s** 的自然拟人化呼吸延时，每检索 **8 个 SPU 强制插入 15 秒深度冷却期**。
+   - **长效登录态保持与识别**：统一通过 Cookie 中的 `pdd_user_id` 与 `pdd_user_uin` 作为已登录鉴权锚点，跳转时自适应携带 `uin` 参数，确保会话稳固不掉线。
+   - **连续 0 候选硬阻断自愈**：当连续 4 次出现 0 搜索候选时，脚本自动触发 20 秒自然冷静期并核验当前页面状态；若确实发生退登立刻硬中断停机向用户报警，坚决禁止无脑快速空跑浪费资源。
 
 ---
 
@@ -176,6 +181,7 @@ node scripts/audit_server.mjs
    - 主控流程启动脚本：`scripts/start_procurement_workflow.mjs`
    - 牵牛花全店主图提取引擎：`scripts/qnh_spu_extractor.mjs`
    - 1688 高销单标签寻源 Worker：`scripts/ali1688_sourcing_worker.mjs`（带 MAX_ROW=1791 自动截止）
+   - 拼多多 Web 拟人防风控寻源 Worker：`scripts/pdd_web_sourcing_worker.mjs`（免重复登录、带长效呼吸节律与自动归因）
    - 标准 14 列原子写入器：`scripts/flush_excel.py`（自动定位【当前工作】/2743.xlsx）
    - 可视化看板生成器：`scripts/export_visual_audit_html.py`（输出至【当前工作】目录）
    - 实时交互与 Excel 同步服务：`scripts/audit_server.mjs`
