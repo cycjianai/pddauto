@@ -61,6 +61,8 @@ def resolve_columns(ws) -> dict[str, int]:
         val = str(ws.cell(1, col).value or "").strip()
         if "当前原价" in val or "原价" in val:
             mapping["current_price"] = col
+        elif "供货主图" in val or "供货商主图" in val:
+            mapping["supplier_pic"] = col
         elif "主图链接" in val or "门店主图" in val:
             mapping["store_pic"] = col
         elif "商品链接" in val or "供货链接" in val:
@@ -138,6 +140,10 @@ def main() -> int:
     cols = resolve_columns(ws)
     progress = json.load(open(progress_path, "r", encoding="utf-8"))
 
+    if "supplier_pic" not in cols:
+        ws.cell(row=1, column=15, value="供货商主图")
+        cols["supplier_pic"] = 15
+
     qnh_map = {}
     if os.path.isfile(QNH_PATH):
         try:
@@ -192,6 +198,8 @@ def main() -> int:
 
             match_text = "不匹配" if r.get("match_status") == "MISMATCH" else "匹配"
             ws.cell(row=row, column=cols["match_status"], value=match_text)
+            if cols.get("supplier_pic"):
+                ws.cell(row=row, column=cols["supplier_pic"], value=r.get("main_pic", ""))
             count_matched += 1
 
         # 3. 寻源排查过但未命中的行：在 H 列写入 3 种标准未命中原因之一，N 列写入“未匹配”
@@ -202,6 +210,8 @@ def main() -> int:
             # 清理供货输出字段
             for k_name in ["sku_specs", "checkout_url", "ratio", "group_price", "unit_price"]:
                 ws.cell(row=row, column=cols[k_name]).value = None
+            if cols.get("supplier_pic"):
+                ws.cell(row=row, column=cols["supplier_pic"]).value = None
             ws.cell(row=row, column=cols["match_status"], value="未匹配")
             count_unmatched += 1
 

@@ -118,6 +118,7 @@ def main() -> int:
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>供应链比价可视化直检看板 ({len(matched_items)} 个已匹配商品)</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   :root {{
     --bg: #f1f5f9;
@@ -397,6 +398,94 @@ def main() -> int:
     opacity: 1;
     transform: translateY(0);
   }}
+  .file-sync-banner {{
+    background: #ffffff;
+    border: 2px dashed #cbd5e1;
+    border-radius: 12px;
+    padding: 14px 20px;
+    margin-bottom: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 16px;
+    transition: all 0.2s ease;
+  }}
+  .file-sync-banner.dragover {{
+    border-color: #2563eb;
+    background: #eff6ff;
+  }}
+  .file-sync-banner.is-connected {{
+    border: 1.5px solid #86efac;
+    background: #f0fdf4;
+  }}
+  .file-sync-banner.is-direct-server {{
+    border: 1.5px solid #93c5fd;
+    background: #f0f9ff;
+  }}
+  .sync-left {{
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex: 1;
+    min-width: 280px;
+  }}
+  .sync-icon {{
+    font-size: 26px;
+    width: 44px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f8fafc;
+    border-radius: 10px;
+    border: 1px solid #e2e8f0;
+    flex-shrink: 0;
+  }}
+  .sync-details {{
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }}
+  .sync-title {{
+    font-size: 14px;
+    font-weight: 700;
+    color: #1e293b;
+  }}
+  .sync-desc {{
+    font-size: 12.5px;
+    color: #64748b;
+    line-height: 1.4;
+  }}
+  .sync-right {{
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }}
+  .btn-sync {{
+    background: #2563eb;
+    color: #ffffff;
+    border: none;
+    padding: 8px 15px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: background 0.15s;
+  }}
+  .btn-sync:hover {{
+    background: #1d4ed8;
+  }}
+  .btn-sync.btn-export {{
+    background: #16a34a;
+  }}
+  .btn-sync.btn-export:hover {{
+    background: #15803d;
+  }}
 </style>
 </head>
 <body>
@@ -420,6 +509,22 @@ def main() -> int:
     <input type="text" id="searchInput" class="search-box" placeholder="搜索商品名、规格或行号...">
   </div>
 </header>
+
+<div id="fileSyncBanner" class="file-sync-banner">
+  <div class="sync-left">
+    <div class="sync-icon" id="syncIcon">📂</div>
+    <div class="sync-details">
+      <div class="sync-title" id="syncTitle">离线团队协作模式 (无内网/异地办公)</div>
+      <div class="sync-desc" id="syncDesc">
+        请点击右侧按钮选择或将收到的 <code>2743.xlsx</code> 拖入此区域。关联后，页面上的每一次【❌ 标记不匹配 / ✅ 恢复匹配】都将<b>原地自动同步修改</b>该 Excel 文件！
+      </div>
+    </div>
+  </div>
+  <div class="sync-right">
+    <button class="btn-sync" id="btnSelectFile" onclick="handleSelectExcelFile()">📂 关联本地 2743.xlsx</button>
+    <button class="btn-sync btn-export" id="btnExportExcel" onclick="handleExportExcel()" style="display:none;">📥 下载已核对 Excel</button>
+  </div>
+</div>
 
 <div class="grid" id="productGrid">
 """
@@ -495,13 +600,17 @@ def main() -> int:
   const toast = document.getElementById('toast');
 
   let currentFilter = 'all';
+  let isBackendConnected = false;
+  let localFileHandle = null;
+  let localWorkbook = null;
+  let localFileName = "";
 
   function showToast(msg) {
     toast.innerText = msg;
     toast.classList.add('show');
     setTimeout(() => {
       toast.classList.remove('show');
-    }, 2500);
+    }, 2800);
   }
 
   function updateCounts() {
@@ -542,19 +651,198 @@ def main() -> int:
 
   searchInput.addEventListener('input', applyFilters);
 
-  // 核心：点击切换匹配状态，实时向本地服务发送请求，并原子回写 2743.xlsx 第 14 列 (N列)
-  async function toggleMatchStatus(row) {
+  // 1. 检查是否在作者本机开发环境
+  async function checkBackendStatus() {
+    try {
+      const resp = await fetch(`${API_BASE}/api/status`, { signal: AbortSignal.timeout(800) });
+      if (resp.ok) {
+        isBackendConnected = true;
+        const banner = document.getElementById('fileSyncBanner');
+        banner.className = 'file-sync-banner is-direct-server';
+        document.getElementById('syncIcon').innerText = '⚡';
+        document.getElementById('syncTitle').innerText = '已连接本机后台服务 (极速直写模式)';
+        document.getElementById('syncDesc').innerHTML = '检测到本机 <code>127.0.0.1:8899</code> 在线，点击标记将直接通过底层脚本极速回写 <code>2743.xlsx</code> N列。';
+        document.getElementById('btnSelectFile').style.display = 'none';
+        return true;
+      }
+    } catch {}
+    isBackendConnected = false;
+    return false;
+  }
+
+  // 2. 选择本地 Excel 文件进行双向关联（支持 Chrome / Edge 原生 File System Access API）
+  async function handleSelectExcelFile() {
+    if ('showOpenFilePicker' in window) {
+      try {
+        const [handle] = await window.showOpenFilePicker({
+          types: [{
+            description: 'Excel 工作簿 (*.xlsx)',
+            accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] }
+          }],
+          multiple: false
+        });
+        localFileHandle = handle;
+        const file = await handle.getFile();
+        await loadWorkbookFromFile(file, true);
+        return;
+      } catch (err) {
+        if (err.name === 'AbortError') return;
+        console.warn("showOpenFilePicker 失败，降级为普通文件选择器:", err);
+      }
+    }
+
+    // 降级选择器（Safari / Firefox / 不支持直接写盘的环境）
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.xlsx';
+    input.onchange = async (e) => {
+      const file = e.target.files[0];
+      if (file) await loadWorkbookFromFile(file, false);
+    };
+    input.click();
+  }
+
+  // 加载 Workbook 并应用当前页面标记
+  async function loadWorkbookFromFile(file, canDirectWrite) {
+    localFileName = file.name;
+    const arrayBuffer = await file.arrayBuffer();
+    localWorkbook = XLSX.read(arrayBuffer, { type: 'array', cellStyles: true });
+
+    // 同步将当前已标记的状态写入 Workbook
+    syncCurrentCardStatusesToWorkbook();
+
+    const banner = document.getElementById('fileSyncBanner');
+    banner.className = 'file-sync-banner is-connected';
+    document.getElementById('syncIcon').innerText = '🟢';
+    document.getElementById('syncTitle').innerText = `已成功关联本地文件: ${localFileName}`;
+    if (canDirectWrite) {
+      document.getElementById('syncDesc').innerHTML = `<b>原生无感写盘已开启</b>：在此页面的每一次点击【❌ 标记不匹配 / ✅ 恢复匹配】，都将<b>原地自动保存</b>至本地 <code>${localFileName}</code>！`;
+    } else {
+      document.getElementById('syncDesc').innerHTML = `<b>内存已同步</b>：标记完成后，点击右侧【📥 下载已核对 Excel】即可导出最新文件。`;
+    }
+    document.getElementById('btnSelectFile').innerText = '🔄 更换文件';
+    document.getElementById('btnExportExcel').style.display = 'inline-flex';
+    showToast(`成功关联 ${localFileName}！开始核对吧`);
+  }
+
+  // 将当前所有卡片的状态同步写入 Workbook
+  function syncCurrentCardStatusesToWorkbook() {
+    if (!localWorkbook) return;
+    const sheetName = localWorkbook.SheetNames[0];
+    const ws = localWorkbook.Sheets[sheetName];
+    cards.forEach(card => {
+      const row = parseInt(card.getAttribute('data-row'), 10);
+      const status = card.getAttribute('data-status');
+      if (row && status) {
+        const text = (status === 'MISMATCH') ? '不匹配' : '匹配';
+        const cellAddr = XLSX.utils.encode_cell({ r: row - 1, c: 13 });
+        ws[cellAddr] = { t: 's', v: text };
+      }
+    });
+  }
+
+  // 原地写回本地 Excel
+  async function writeMatchStatusToExcel(rowNum, status) {
+    const text = (status === 'MISMATCH') ? '不匹配' : '匹配';
+    if (localWorkbook) {
+      const sheetName = localWorkbook.SheetNames[0];
+      const ws = localWorkbook.Sheets[sheetName];
+      const cellAddr = XLSX.utils.encode_cell({ r: rowNum - 1, c: 13 });
+      ws[cellAddr] = { t: 's', v: text };
+
+      if (localFileHandle) {
+        try {
+          const newBuf = XLSX.write(localWorkbook, { bookType: 'xlsx', type: 'array' });
+          const writable = await localFileHandle.createWritable();
+          await writable.write(newBuf);
+          await writable.close();
+          return { ok: true, directWritten: true, text };
+        } catch (err) {
+          console.warn("原地写入失败，降级为内存同步:", err);
+        }
+      }
+      return { ok: true, memoryUpdated: true, text };
+    }
+    return { ok: false, text };
+  }
+
+  // 一键下载已核对 Excel
+  function handleExportExcel() {
+    if (!localWorkbook) {
+      showToast("请先点击上方关联收到的 2743.xlsx 文件！");
+      return;
+    }
+    syncCurrentCardStatusesToWorkbook();
+    const outName = localFileName ? localFileName.replace(/\\.xlsx$/i, '') + '_已核对.xlsx' : '2743_已核对.xlsx';
+    XLSX.writeFile(localWorkbook, outName);
+    showToast(`已成功下载 ${outName}！`);
+  }
+
+  // 拖拽文件关联支持
+  function setupDragAndDrop() {
+    const banner = document.getElementById('fileSyncBanner');
+    ['dragenter', 'dragover'].forEach(name => {
+      window.addEventListener(name, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        banner.classList.add('dragover');
+      });
+    });
+    ['dragleave', 'drop'].forEach(name => {
+      window.addEventListener(name, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        banner.classList.remove('dragover');
+      });
+    });
+    window.addEventListener('drop', async (e) => {
+      const dt = e.dataTransfer;
+      if (!dt || !dt.files || dt.files.length === 0) return;
+      const file = dt.files[0];
+      if (!file.name.endsWith('.xlsx')) {
+        showToast('请拖入 .xlsx 格式的 Excel 文件！');
+        return;
+      }
+      if (dt.items && dt.items[0] && dt.items[0].getAsFileSystemHandle) {
+        try {
+          const handle = await dt.items[0].getAsFileSystemHandle();
+          if (handle && handle.kind === 'file') {
+            localFileHandle = handle;
+            await loadWorkbookFromFile(file, true);
+            return;
+          }
+        } catch {}
+      }
+      await loadWorkbookFromFile(file, false);
+    });
+  }
+
+  // 恢复 localStorage 离线标记
+  function restoreLocalMarks() {
+    let restoredCount = 0;
+    cards.forEach(card => {
+      const row = card.getAttribute('data-row');
+      const saved = localStorage.getItem('sourcing_audit_row_' + row);
+      if (saved && (saved === 'MATCH' || saved === 'MISMATCH')) {
+        if (saved !== card.getAttribute('data-status')) {
+          setCardStatusUI(row, saved);
+          restoredCount++;
+        }
+      }
+    });
+    if (restoredCount > 0) {
+      updateCounts();
+    }
+  }
+
+  function setCardStatusUI(row, status) {
     const card = document.getElementById('card-' + row);
     const badge = document.getElementById('status-badge-' + row);
     const btn = document.getElementById('btn-toggle-' + row);
     if (!card) return;
 
-    const curStatus = card.getAttribute('data-status') || 'MATCH';
-    const nextStatus = (curStatus === 'MISMATCH') ? 'MATCH' : 'MISMATCH';
-
-    // 乐观 UI 更新
-    card.setAttribute('data-status', nextStatus);
-    if (nextStatus === 'MISMATCH') {
+    card.setAttribute('data-status', status);
+    if (status === 'MISMATCH') {
       card.classList.add('is-mismatch');
       badge.className = 'status-badge status-mismatch';
       badge.innerText = '❌ 不匹配';
@@ -567,21 +855,55 @@ def main() -> int:
       btn.className = 'btn-audit btn-mark-mismatch';
       btn.innerText = '❌ 匹配错误';
     }
+  }
+
+  // 核心：点击切换匹配状态
+  async function toggleMatchStatus(row) {
+    const card = document.getElementById('card-' + row);
+    if (!card) return;
+
+    const curStatus = card.getAttribute('data-status') || 'MATCH';
+    const nextStatus = (curStatus === 'MISMATCH') ? 'MATCH' : 'MISMATCH';
+
+    // 乐观 UI 更新
+    setCardStatusUI(row, nextStatus);
     updateCounts();
 
-    // 发送 API 请求同步写入 Excel
+    // 持久化到 localStorage
     try {
-      const resp = await fetch(`${API_BASE}/api/toggle-match?row=${row}&status=${nextStatus}`);
-      const data = await resp.json();
-      if (data.ok) {
-        showToast(`Row #${row} 状态已联动更新为【${data.text}】，已同步写入 Excel N 列!`);
-      } else {
-        showToast(`Row #${row} 更新失败: ${data.error}`);
+      localStorage.setItem('sourcing_audit_row_' + row, nextStatus);
+    } catch {}
+
+    // A. 如果连接了本机后台服务，直接发送 API
+    if (isBackendConnected) {
+      try {
+        const resp = await fetch(`${API_BASE}/api/toggle-match?row=${row}&status=${nextStatus}`);
+        const data = await resp.json();
+        if (data.ok) {
+          showToast(`Row #${row} 已同步写入本机 2743.xlsx 第 14 列 (N列【${data.text}】)!`);
+          return;
+        }
+      } catch {
+        isBackendConnected = false;
       }
-    } catch (e) {
-      showToast(`Row #${row} 本地已标记为【${nextStatus === 'MISMATCH' ? '不匹配' : '匹配'}】(服务未连接时本地缓存有效)`);
+    }
+
+    // B. 离线/跨电脑协作模式：通过 SheetJS 原地修改本地 Excel
+    const res = await writeMatchStatusToExcel(row, nextStatus);
+    if (res.directWritten) {
+      showToast(`Row #${row} 状态已更新为【${res.text}】，已原地自动保存至本地 ${localFileName}！`);
+    } else if (res.memoryUpdated) {
+      showToast(`Row #${row} 状态已更新为【${res.text}】！请记得点击上方【下载已核对 Excel】。`);
+    } else {
+      showToast(`Row #${row} 已标记为【${nextStatus === 'MISMATCH' ? '不匹配' : '匹配'}】！请点击上方关联 2743.xlsx 以同步保存。`);
     }
   }
+
+  window.addEventListener('DOMContentLoaded', () => {
+    restoreLocalMarks();
+    checkBackendStatus();
+    setupDragAndDrop();
+  });
 </script>
 
 </body>

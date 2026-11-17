@@ -1,12 +1,13 @@
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import { execSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const QNH_FIXED_PATH = "/tmp/qnh_all_details_fixed.json";
 const QNH_FALLBACK_PATH = "/tmp/qnh_all_details.json";
 const PROGRESS_PATH = "/tmp/pdd_sourcing_progress.json";
-const EXCEL_PATH = "/Users/cenbusi/Desktop/2743.xlsx";
-const FLUSH_SCRIPT_PATH = "/Users/cenbusi/.gemini/antigravity/brain/da210e82-b25c-40ef-abb7-464dde2672c8/scratch/flush_excel.py";
+const EXCEL_PATH = "/Users/cenbusi/Desktop/当前工作/2743.xlsx";
+const FLUSH_SCRIPT_PATH = "/Users/cenbusi/Desktop/原点项目-S1/.agents/skills/procurement-sourcing/scripts/flush_excel.py";
 const OCR_BIN = "/tmp/mac_ocr";
 const DEVICE_ID = "b78d30ef";
 
@@ -15,7 +16,7 @@ const jitter = (baseMs, spreadMs = 450) => baseMs + Math.floor(Math.random() * s
 
 function adb(cmdStr, timeout = 9000) {
   try {
-    return execSync(`adb -s ${DEVICE_ID} shell "${cmdStr}"`, { timeout, encoding: "utf8" });
+    return execSync(`adb -s ${DEVICE_ID} shell "${cmdStr}"`, { timeout, maxBuffer: 10 * 1024 * 1024, encoding: "utf8" });
   } catch {
     return "";
   }
@@ -73,6 +74,22 @@ function capturePhoneAndOcr(tmpPng = "/tmp/pdd_phone_frame.png") {
 
 function isValidNumericId(val) {
   return typeof val === "string" && /^\d{6,22}$/.test(val.trim());
+}
+
+export function extractRetailPrice(r) {
+  if (!r) return 0;
+  let sp = r.suggestPrice;
+  if (sp && typeof sp === "object") {
+    sp = sp.tenantSuggestPrice?.unifiedSuggestPrice;
+  }
+  const cand = [sp, r.basicPrice, r.retail_price];
+  for (const c of cand) {
+    if (c !== null && c !== undefined) {
+      const val = parseFloat(String(c).trim());
+      if (!isNaN(val) && val > 0) return val;
+    }
+  }
+  return 0;
 }
 
 export function cleanSkuSpecText(rawSpec) {
@@ -969,18 +986,18 @@ function cleanKeywords(item) {
 
 function getPhoneTopBundle() {
   const out = adb("dumpsys activity com.xunmeng.pinduoduo");
-  if (!out) return { inPdd: false, hasDrawer: false, lastBundle: "", goodsId: null, skuId: null, goodsNumber: "1", thumbUrl: "" };
+  if (!out) return { inPdd: false, hasDrawer: false, lastBundle: "", goodsId: null, skuId: null, goodsNumber: "1", thumbUrl: "", isImageSearchResult: false };
 
   const inPdd = /mResumed=true/.test(out);
   const hasDrawer = /CheckoutFrameLayout\{[0-9a-f]+ V\.E/.test(out);
-  const bundles = [...out.matchAll(/mArguments=Bundle\[\{props=\{([\s\S]*?)\}\]/g)];
+  const bundles = [...out.matchAll(/mArguments=Bundle\[\{([\s\S]*?)\}\]/g)];
   const lastBundle = bundles.length > 0 ? bundles[bundles.length - 1][1] : "";
 
-  const gidM = lastBundle.match(/goods_id[=\\": ]+(\d{6,20})/);
-  const sidM = lastBundle.match(/sku_id[=\\": ]+(\d{6,20})/);
+  const gidM = lastBundle.match(/goods_id[=\\": ]+(\d{6,20})/) || out.match(/goods_id[=\\": ]+(\d{6,20})/);
+  const sidM = lastBundle.match(/sku_id[=\\": ]+(\d{6,20})/) || out.match(/sku_id[=\\": ]+(\d{6,20})/);
   const numM = lastBundle.match(/goods_number[=\\": ]+(\d+)/);
   let thumbUrl = "";
-  const thM = lastBundle.match(/thumb_url=([^&"\\]+)/);
+  const thM = lastBundle.match(/thumb_url=([^&"\\]+)/) || out.match(/thumb_url=([^&"\\]+)/);
   if (thM) {
     try {
       thumbUrl = decodeURIComponent(thM[1]).split("?")[0];
@@ -994,6 +1011,7 @@ function getPhoneTopBundle() {
     isGoodsPage: /goods\.html|pdd_goods_detail/.test(lastBundle) && !!gidM,
     isCheckoutPage: /order_checkout\.html/.test(lastBundle) && !!gidM && !!sidM,
     isLikesPage: /likes\.html/.test(lastBundle),
+    isImageSearchResult: /search_img|sjs_search_img/.test(out),
     goodsId: gidM ? gidM[1] : null,
     skuId: sidM ? sidM[1] : null,
     goodsNumber: numM ? numM[1] : "1",
@@ -1260,22 +1278,288 @@ function flushToExcel() {
   try {
     const out = execSync(`python3 "${FLUSH_SCRIPT_PATH}"`, { encoding: "utf8", timeout: 40000 });
     console.log(out.trim());
+    const dashPath = "/Users/cenbusi/Desktop/原点项目-S1/.agents/skills/procurement-sourcing/scripts/export_visual_audit_html.py";
+    if (fsSync.existsSync(dashPath)) {
+      execSync(`python3 "${dashPath}"`, { encoding: "utf8", timeout: 30000 });
+    }
   } catch (e) {
     console.error("[Excel] Flush error:", e.message);
   }
 }
 
+// [通道 B：单件原子流相册以图搜图]
+// 传一张 ➔ 搜一张 ➔ finally 强制物理删除并广播刷新，相册零污染
+async function phoneImageSearchAtomic(imgUrl) {
+  if (!imgUrl || !imgUrl.startsWith("http")) return false;
+  const ts = Date.now();
+  const filename = `pdd_task_tmp_${ts}.jpg`;
+  const localCache = `/tmp/${filename}`;
+  const remotePath = `/sdcard/DCIM/Camera/${filename}`;
+
+  try {
+    execSync(`curl -s "${imgUrl}" -o "${localCache}"`, { timeout: 8000 });
+    if (!fsSync.existsSync(localCache) || fsSync.statSync(localCache).size < 100) return false;
+
+    execSync(`adb -s ${DEVICE_ID} push "${localCache}" "${remotePath}"`, { timeout: 5000 });
+    adb(`am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d 'file://${remotePath}'`);
+    await sleep(350);
+
+    adb("am start --activity-clear-top -a android.intent.action.VIEW -d 'pinduoduo://com.xunmeng.pinduoduo/search_image_capture.html'");
+    await sleep(750);
+
+    // Dismiss any "请对准商品" prompt if present
+    adb("input tap 1115 1164");
+    await sleep(200);
+
+    // Tap the 1st photo in recent items bar (x: 100, y: 2300)
+    adb("input tap 100 2300");
+    await sleep(1600);
+
+    const st = getPhoneTopBundle();
+    const ok = st.isImageSearchResult || /search_img|sjs_search_img/.test(st.lastBundle) || /搜图片同款/.test(adb("dumpsys window | grep -i mCurrentFocus"));
+    return ok;
+  } catch (e) {
+    console.error(`    [识图异常] ${e.message}`);
+    return false;
+  } finally {
+    try {
+      if (fsSync.existsSync(localCache)) fsSync.unlinkSync(localCache);
+      adb(`rm -f "${remotePath}" && am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d 'file://${remotePath}'`);
+    } catch {}
+  }
+}
+
+async function inspectCardsOnCurrentSearchPage(pendingRows, progress, seenGoodsIds, modeLabel) {
+  const cardTargets = await sortBySalesAndGetCardTargets();
+  console.log(`    [${modeLabel}] 锁定 ${cardTargets.length} 个候选卡片`);
+
+  for (const [cx, cy] of cardTargets) {
+    const rem = pendingRows.filter((r) => progress[String(r.row)]?.status !== "MATCHED");
+    if (rem.length === 0) break;
+
+    adb(`input tap ${cx} ${cy}`);
+    await sleep(jitter(1450, 450));
+
+    const st = getPhoneTopBundle();
+    if (!st.inPdd) {
+      adb("input keyevent 4");
+      await sleep(1000);
+      continue;
+    }
+    if (!st.isGoodsPage || !st.goodsId) {
+      if (/mall_page|subject/.test(st.lastBundle)) {
+        adb("input keyevent 4");
+        await sleep(700);
+      }
+      continue;
+    }
+
+    const goodsId = st.goodsId;
+    const mainPic = st.thumbUrl || "";
+    if (!isValidNumericId(goodsId) || seenGoodsIds.has(goodsId)) {
+      adb("input keyevent 4");
+      await sleep(600);
+      continue;
+    }
+    seenGoodsIds.add(goodsId);
+
+    const goodsPageObs = capturePhoneAndOcr("/tmp/pdd_goods_cur.png");
+    const allGoodsScreenText = goodsPageObs.map((o) => o.text).join(" ");
+
+    // CIRCUIT BREAKER: Check for PDD detail-page throttle ("商品已售罄，推荐以下相似商品") or verification slider!
+    if (/请完成验证|滑动验证|安全验证|账号登录/.test(allGoodsScreenText)) {
+      console.error(`[CIRCUIT_BREAKER] 检测到拼多多验证/登录拦截，立即安全暂停保护进度！`);
+      flushToExcel();
+      process.exit(42);
+    }
+    if (/商品已售罄.*推荐以下相似商品|商品已下架/.test(allGoodsScreenText)) {
+      console.warn(`    [风控预警] 商品 ${goodsId} 返回 "商品已售罄，推荐以下相似商品"`);
+      adb("input keyevent 4");
+      await sleep(700);
+      continue;
+    }
+
+    const goodsTitleText = goodsPageObs
+      .filter((o) => o.py >= 1150 && o.py <= 2350)
+      .map((o) => o.text)
+      .join(" ");
+
+    // Open SKU drawer
+    adb("input tap 900 2500");
+    await sleep(jitter(1300, 350));
+
+    let drawerObs = capturePhoneAndOcr("/tmp/pdd_drawer_cur.png");
+
+    const listToggle = drawerObs.find((o) => o.px > 920 && o.py > 1150 && o.py < 1550 && /列表/.test(o.text));
+    if (listToggle) {
+      adb(`input tap ${listToggle.px} ${listToggle.py}`);
+      await sleep(650);
+      drawerObs = capturePhoneAndOcr("/tmp/pdd_drawer_list.png");
+    }
+
+    const hasDrawerDiscount = drawerObs.some((o) => /店铺券\s*-\s*\d|已优惠/.test(o.text));
+    const drawerCouponBtn = drawerObs.find(
+      (o) => o.py > 1150 && o.py < 1600 && /领券|可领|点击领/.test(o.text) && !/店铺券\s*-/.test(o.text)
+    );
+    if (!hasDrawerDiscount && drawerCouponBtn) {
+      adb(`input tap ${drawerCouponBtn.px} ${drawerCouponBtn.py}`);
+      await sleep(900);
+      const popObs = capturePhoneAndOcr("/tmp/pdd_drawer_cpop.png");
+      for (const b of popObs.filter((o) => o.py > 700 && o.py < 2300 && /^(领取|立即领券|一键领取)$/.test(o.text)).slice(0, 2)) {
+        adb(`input tap ${b.px} ${b.py}`);
+        await sleep(550);
+      }
+      adb("input keyevent 4");
+      await sleep(700);
+      drawerObs = capturePhoneAndOcr("/tmp/pdd_drawer_after_c.png");
+    }
+
+    let skuCands = parseDrawerSkuCandidates(drawerObs);
+    let didScrollDrawer = false;
+
+    for (const rowItem of rem) {
+      const rowKey = String(rowItem.row);
+      const retail = extractRetailPrice(rowItem);
+      if (retail <= 0) continue;
+      const maxUnitPrice = parseFloat((retail * 0.5).toFixed(2));
+
+      const findBestInCands = (cands) => {
+        const valid = [];
+        for (const c of cands) {
+          if (!c.price || isNaN(c.price) || c.price <= 0) continue;
+          if (!isSpecCompatible(rowItem.excelName, rowItem.excelSpec, goodsTitleText, c.spec)) continue;
+          const ratio = computeRatio(rowItem.excelName, rowItem.excelSpec, c.spec);
+          const unitP = parseFloat((c.price / ratio).toFixed(2));
+          if (unitP <= maxUnitPrice || c.price <= maxUnitPrice * ratio + 2) {
+            valid.push({ ...c, ratio, unitP });
+          }
+        }
+        valid.sort((a, b) => a.unitP - b.unitP);
+        return valid[0] || null;
+      };
+
+      let bestCand = findBestInCands(skuCands);
+      if (!bestCand && !didScrollDrawer && skuCands.length >= 3) {
+        adb("input swipe 600 2180 600 1580 280");
+        await sleep(650);
+        didScrollDrawer = true;
+        const scrolledObs = capturePhoneAndOcr("/tmp/pdd_drawer_scroll.png");
+        skuCands = parseDrawerSkuCandidates(scrolledObs);
+        bestCand = findBestInCands(skuCands);
+      }
+
+      if (!bestCand) continue;
+
+      if (!bestCand.isDefaultSelected && bestCand.px && bestCand.py) {
+        adb(`input tap ${bestCand.px} ${bestCand.py}`);
+        await sleep(600);
+        const selObs = capturePhoneAndOcr("/tmp/pdd_drawer_sel.png");
+        const fullSel = cleanSkuSpecText(
+          selObs
+            .filter((o) => o.py >= 930 && o.py <= 1125 && o.px > 380)
+            .sort((a, b) => a.py - b.py)
+            .map((o) => o.text.replace(/^已选[:：]\s*/, "").trim())
+            .join("")
+        );
+        if (fullSel && fullSel.length > bestCand.spec.length && !fullSel.endsWith("…")) {
+          bestCand.spec = fullSel;
+        }
+      }
+
+      adb("input tap 1135 359");
+      await sleep(480);
+      adb("input tap 263 2500");
+      await sleep(800);
+
+      let extractedSkuId = null;
+      let postCouponTotal = null;
+      let finalSpec = cleanSkuSpecText(bestCand.spec);
+      let discountDesc = "";
+
+      try {
+        adb("am start --activity-clear-top -a android.intent.action.VIEW -d 'pinduoduo://com.xunmeng.pinduoduo/likes.html'");
+        await sleep(1500);
+        adb("input tap 67 790");
+        await sleep(480);
+        adb("input tap 980 2530");
+        await sleep(1650);
+
+        const ckState = getPhoneTopBundle();
+        if (ckState.isCheckoutPage && isValidNumericId(ckState.skuId)) {
+          extractedSkuId = ckState.skuId;
+          const verifyRes = await phoneVerifyCheckoutClaimCouponAndReadPrice(
+            goodsId,
+            extractedSkuId,
+            bestCand.price,
+            bestCand.spec
+          );
+          if (verifyRes.ok) {
+            postCouponTotal = verifyRes.postCouponPrice;
+            finalSpec = verifyRes.checkoutSpec || finalSpec;
+            discountDesc = verifyRes.discountDesc;
+          }
+        }
+      } finally {
+        await clearPhoneFavorites();
+      }
+
+      if (extractedSkuId && postCouponTotal !== null && isSpecCompatible(rowItem.excelName, rowItem.excelSpec, goodsTitleText, finalSpec)) {
+        const finalRatio = computeRatio(rowItem.excelName, rowItem.excelSpec, finalSpec);
+        const finalUnitPrice = parseFloat((postCouponTotal / finalRatio).toFixed(2));
+        console.log(
+          `    [结算核验] Row ${rowKey} | gid=${goodsId} sid=${extractedSkuId} | 规格="${finalSpec}" | 实付=¥${postCouponTotal} | 比例=${finalRatio} | 单价=¥${finalUnitPrice} (上限<=¥${maxUnitPrice})`
+        );
+
+        if (finalUnitPrice <= maxUnitPrice) {
+          progress[rowKey] = {
+            row: rowItem.row,
+            spuId: rowItem.spuId,
+            skuId: rowItem.skuId,
+            goods_id: goodsId,
+            goods_url: `https://mobile.yangkeduo.com/goods.html?goods_id=${goodsId}`,
+            sku_id: extractedSkuId,
+            sku_specs: finalSpec || "默认规格",
+            checkout_url: `https://mobile.yangkeduo.com/order_checkout.html?goods_id=${goodsId}&sku_id=${extractedSkuId}&goods_number=1`,
+            ratio: finalRatio,
+            group_price: postCouponTotal,
+            unit_price: finalUnitPrice,
+            retail_price: retail,
+            discount_desc: discountDesc,
+            main_pic: mainPic,
+            coupon_checked: true,
+            status: "MATCHED",
+          };
+          await fs.writeFile(PROGRESS_PATH, JSON.stringify(progress, null, 2), "utf8");
+          console.log(`    ★ 成功匹配 Row ${rowKey}! 券后单价 ¥${finalUnitPrice} <= ¥${maxUnitPrice}`);
+          flushToExcel();
+        }
+      }
+    }
+
+    const curSt = getPhoneTopBundle();
+    if (curSt.hasDrawer) {
+      adb("input tap 1135 359");
+      await sleep(400);
+    }
+    if (getPhoneTopBundle().isGoodsPage) {
+      adb("input keyevent 4");
+      await sleep(600);
+    }
+  }
+}
+
 async function runSourcingLoop() {
+  const MAX_TARGET_ROW = 1791;
   const srcPath = fsSync.existsSync(QNH_FIXED_PATH) ? QNH_FIXED_PATH : QNH_FALLBACK_PATH;
   const rawItems = JSON.parse(await fs.readFile(srcPath, "utf8"));
 
   const byRow = new Map();
   for (const it of rawItems) {
     const r = Number(it.row);
-    if (r >= 49 && r <= 2791 && !byRow.has(r)) byRow.set(r, it);
+    if (r >= 49 && r <= MAX_TARGET_ROW && !byRow.has(r)) byRow.set(r, it);
   }
   const allItems = [...byRow.values()].sort((a, b) => a.row - b.row);
-  console.log(`[Phone Worker v3] Loaded ${allItems.length} unique rows (49..2791).`);
+  console.log(`[Phone Worker v3] Loaded ${allItems.length} unique rows (49..${MAX_TARGET_ROW}).`);
 
   const spuGroups = [];
   const spuMap = new Map();
@@ -1299,13 +1583,11 @@ async function runSourcingLoop() {
   await sleep(400);
   await clearPhoneFavorites();
 
-  let newMatchesSinceFlush = 0;
-  let consecutiveSoldOutWall = 0;
   let processedSpuSinceRest = 0;
 
   for (let gIdx = 0; gIdx < spuGroups.length; gIdx++) {
     const grp = spuGroups[gIdx];
-    const pendingRows = grp.rows.filter((r) => !progress[String(r.row)]?.status);
+    const pendingRows = grp.rows.filter((r) => progress[String(r.row)]?.status !== "MATCHED" && r.row <= MAX_TARGET_ROW);
     if (pendingRows.length === 0) continue;
 
     if (processedSpuSinceRest > 0 && processedSpuSinceRest % 25 === 0) {
@@ -1315,260 +1597,37 @@ async function runSourcingLoop() {
     processedSpuSinceRest++;
 
     const lead = pendingRows[0];
-    const searchKws = cleanKeywords(lead);
+    const storePic = lead.picUrl || "";
 
     console.log(`\n==================================================`);
     console.log(`[SPU ${gIdx + 1}/${spuGroups.length}] Rows [${pendingRows.map((r) => r.row).join(",")}] | ${lead.excelName}`);
     for (const r of pendingRows) {
-      const rt = Number(r.suggestPrice || r.basicPrice || 0);
+      const rt = extractRetailPrice(r);
       console.log(`  - Row ${r.row} (${r.excelSpec}): 原价 ¥${rt} | 半价红线 <= ¥${(rt * 0.5).toFixed(2)}`);
     }
 
     const seenGoodsIds = new Set();
 
-    for (const kw of searchKws) {
-      const rem0 = pendingRows.filter((r) => progress[String(r.row)]?.status !== "MATCHED");
-      if (rem0.length === 0) break;
+    // 1. 首选：拼多多 App 原生相册单件原子流以图搜图（用户核心诉求）
+    if (storePic && storePic.startsWith("http")) {
+      console.log(`  >>> [优先识图搜同款] 门店主图: ${storePic}`);
+      const okImg = await phoneImageSearchAtomic(storePic);
+      if (okImg) {
+        await inspectCardsOnCurrentSearchPage(pendingRows, progress, seenGoodsIds, "以图搜图");
+      }
+    }
 
-      console.log(`  >>> [搜索] "${kw}"`);
-      const encoded = encodeURIComponent(kw);
-      adb(`am start --activity-clear-top -a android.intent.action.VIEW -d 'pinduoduo://com.xunmeng.pinduoduo/search_result.html?search_key=${encoded}'`);
-      await sleep(jitter(1650, 500));
-
-      const cardTargets = await sortBySalesAndGetCardTargets();
-
-      for (const [cx, cy] of cardTargets) {
-        const rem = pendingRows.filter((r) => progress[String(r.row)]?.status !== "MATCHED");
-        if (rem.length === 0) break;
-
-        adb(`input tap ${cx} ${cy}`);
-        await sleep(jitter(1450, 450));
-
-        const st = getPhoneTopBundle();
-        if (!st.inPdd) {
-          adb(`am start --activity-clear-top -a android.intent.action.VIEW -d 'pinduoduo://com.xunmeng.pinduoduo/search_result.html?search_key=${encoded}'`);
-          await sleep(1400);
-          continue;
-        }
-        if (!st.isGoodsPage || !st.goodsId) {
-          // Probably tapped a store banner -> press back if navigated away
-          if (/mall_page|subject/.test(st.lastBundle)) {
-            adb("input keyevent 4");
-            await sleep(700);
-          }
-          continue;
-        }
-
-        const goodsId = st.goodsId;
-        const mainPic = st.thumbUrl || "";
-        if (!isValidNumericId(goodsId) || seenGoodsIds.has(goodsId)) {
-          adb("input keyevent 4");
-          await sleep(600);
-          continue;
-        }
-        seenGoodsIds.add(goodsId);
-
-        const goodsPageObs = capturePhoneAndOcr("/tmp/pdd_goods_cur.png");
-        const allGoodsScreenText = goodsPageObs.map((o) => o.text).join(" ");
-
-        // CIRCUIT BREAKER: Check for PDD detail-page throttle ("商品已售罄，推荐以下相似商品") or verification slider!
-        if (/请完成验证|滑动验证|安全验证|账号登录/.test(allGoodsScreenText)) {
-          console.error(`[CIRCUIT_BREAKER] 检测到拼多多验证/登录拦截，立即安全暂停保护进度！`);
-          flushToExcel();
-          process.exit(42);
-        }
-        if (/商品已售罄.*推荐以下相似商品|商品已下架/.test(allGoodsScreenText)) {
-          consecutiveSoldOutWall++;
-          console.warn(`    [风控预警] 商品 ${goodsId} 返回 "商品已售罄，推荐以下相似商品" (连续 ${consecutiveSoldOutWall}/3)`);
-          adb("input keyevent 4");
-          await sleep(700);
-          if (consecutiveSoldOutWall >= 3) {
-            console.error(
-              `[CIRCUIT_BREAKER] 连续 3 个在售商品详情页返回 "商品已售罄，推荐以下相似商品"，当前买家号详情页已被限流！安全熔断退出（绝不污染未匹配标记）。`
-            );
-            flushToExcel();
-            process.exit(43);
-          }
-          continue;
-        }
-        consecutiveSoldOutWall = 0;
-
-        const goodsTitleText = goodsPageObs
-          .filter((o) => o.py >= 1150 && o.py <= 2350)
-          .map((o) => o.text)
-          .join(" ");
-
-        // Open SKU drawer
-        adb("input tap 900 2500");
-        await sleep(jitter(1300, 350));
-
-        let drawerObs = capturePhoneAndOcr("/tmp/pdd_drawer_cur.png");
-
-        const listToggle = drawerObs.find((o) => o.px > 920 && o.py > 1150 && o.py < 1550 && /列表/.test(o.text));
-        if (listToggle) {
-          adb(`input tap ${listToggle.px} ${listToggle.py}`);
-          await sleep(650);
-          drawerObs = capturePhoneAndOcr("/tmp/pdd_drawer_list.png");
-        }
-
-        const hasDrawerDiscount = drawerObs.some((o) => /店铺券\s*-\s*\d|已优惠/.test(o.text));
-        const drawerCouponBtn = drawerObs.find(
-          (o) => o.py > 1150 && o.py < 1600 && /领券|可领|点击领/.test(o.text) && !/店铺券\s*-/.test(o.text)
-        );
-        if (!hasDrawerDiscount && drawerCouponBtn) {
-          adb(`input tap ${drawerCouponBtn.px} ${drawerCouponBtn.py}`);
-          await sleep(900);
-          const popObs = capturePhoneAndOcr("/tmp/pdd_drawer_cpop.png");
-          for (const b of popObs.filter((o) => o.py > 700 && o.py < 2300 && /^(领取|立即领券|一键领取)$/.test(o.text)).slice(0, 2)) {
-            adb(`input tap ${b.px} ${b.py}`);
-            await sleep(550);
-          }
-          adb("input keyevent 4");
-          await sleep(700);
-          drawerObs = capturePhoneAndOcr("/tmp/pdd_drawer_after_c.png");
-        }
-
-        let skuCands = parseDrawerSkuCandidates(drawerObs);
-        let didScrollDrawer = false;
-
-        for (const rowItem of rem) {
-          const rowKey = String(rowItem.row);
-          const retail = Number(rowItem.suggestPrice || rowItem.basicPrice || 0);
-          if (retail <= 0) continue;
-          const maxUnitPrice = parseFloat((retail * 0.5).toFixed(2));
-
-          const findBestInCands = (cands) => {
-            const valid = [];
-            for (const c of cands) {
-              if (!c.price || isNaN(c.price) || c.price <= 0) continue;
-              if (!isSpecCompatible(rowItem.excelName, rowItem.excelSpec, goodsTitleText, c.spec)) continue;
-              const ratio = computeRatio(rowItem.excelName, rowItem.excelSpec, c.spec);
-              const unitP = parseFloat((c.price / ratio).toFixed(2));
-              if (unitP <= maxUnitPrice || c.price <= maxUnitPrice * ratio + 2) {
-                valid.push({ ...c, ratio, unitP });
-              }
-            }
-            valid.sort((a, b) => a.unitP - b.unitP);
-            return valid[0] || null;
-          };
-
-          let bestCand = findBestInCands(skuCands);
-          if (!bestCand && !didScrollDrawer && skuCands.length >= 3) {
-            adb("input swipe 600 2180 600 1580 280");
-            await sleep(650);
-            didScrollDrawer = true;
-            const scrolledObs = capturePhoneAndOcr("/tmp/pdd_drawer_scroll.png");
-            skuCands = parseDrawerSkuCandidates(scrolledObs);
-            bestCand = findBestInCands(skuCands);
-          }
-
-          if (!bestCand) continue;
-
-          if (!bestCand.isDefaultSelected && bestCand.px && bestCand.py) {
-            adb(`input tap ${bestCand.px} ${bestCand.py}`);
-            await sleep(600);
-            const selObs = capturePhoneAndOcr("/tmp/pdd_drawer_sel.png");
-            const fullSel = cleanSkuSpecText(
-              selObs
-                .filter((o) => o.py >= 930 && o.py <= 1125 && o.px > 380)
-                .sort((a, b) => a.py - b.py)
-                .map((o) => o.text.replace(/^已选[:：]\s*/, "").trim())
-                .join("")
-            );
-            if (fullSel && fullSel.length > bestCand.spec.length && !fullSel.endsWith("…")) {
-              bestCand.spec = fullSel;
-            }
-          }
-
-          adb("input tap 1135 359");
-          await sleep(480);
-          adb("input tap 263 2500");
-          await sleep(800);
-
-          let extractedSkuId = null;
-          let postCouponTotal = null;
-          let finalSpec = cleanSkuSpecText(bestCand.spec);
-          let discountDesc = "";
-
-          try {
-            adb("am start --activity-clear-top -a android.intent.action.VIEW -d 'pinduoduo://com.xunmeng.pinduoduo/likes.html'");
-            await sleep(1500);
-            adb("input tap 67 790");
-            await sleep(480);
-            adb("input tap 980 2530");
-            await sleep(1650);
-
-            const ckState = getPhoneTopBundle();
-            if (ckState.isCheckoutPage && isValidNumericId(ckState.skuId)) {
-              extractedSkuId = ckState.skuId;
-              const verifyRes = await phoneVerifyCheckoutClaimCouponAndReadPrice(
-                goodsId,
-                extractedSkuId,
-                bestCand.price,
-                bestCand.spec
-              );
-              if (verifyRes.ok) {
-                postCouponTotal = verifyRes.postCouponPrice;
-                finalSpec = verifyRes.checkoutSpec || finalSpec;
-                discountDesc = verifyRes.discountDesc;
-              }
-            }
-          } finally {
-            await clearPhoneFavorites();
-          }
-
-          if (extractedSkuId && postCouponTotal !== null && isSpecCompatible(rowItem.excelName, rowItem.excelSpec, goodsTitleText, finalSpec)) {
-            const finalRatio = computeRatio(rowItem.excelName, rowItem.excelSpec, finalSpec);
-            const finalUnitPrice = parseFloat((postCouponTotal / finalRatio).toFixed(2));
-            console.log(
-              `    [结算核验] Row ${rowKey} | gid=${goodsId} sid=${extractedSkuId} | 规格="${finalSpec}" | 实付=¥${postCouponTotal} | 比例=${finalRatio} | 单价=¥${finalUnitPrice} (上限<=¥${maxUnitPrice})`
-            );
-
-            if (finalUnitPrice <= maxUnitPrice) {
-              progress[rowKey] = {
-                row: rowItem.row,
-                spuId: rowItem.spuId,
-                skuId: rowItem.skuId,
-                goods_id: goodsId,
-                goods_url: `https://mobile.yangkeduo.com/goods.html?goods_id=${goodsId}`,
-                sku_id: extractedSkuId,
-                sku_specs: finalSpec || "默认规格",
-                checkout_url: `https://mobile.yangkeduo.com/order_checkout.html?goods_id=${goodsId}&sku_id=${extractedSkuId}&goods_number=1`,
-                ratio: finalRatio,
-                group_price: postCouponTotal,
-                unit_price: finalUnitPrice,
-                retail_price: retail,
-                discount_desc: discountDesc,
-                main_pic: mainPic,
-                coupon_checked: true,
-                status: "MATCHED",
-              };
-              await fs.writeFile(PROGRESS_PATH, JSON.stringify(progress, null, 2), "utf8");
-              newMatchesSinceFlush++;
-              console.log(`    ★ 成功匹配 Row ${rowKey}! 券后单价 ¥${finalUnitPrice} <= ¥${maxUnitPrice}`);
-              if (newMatchesSinceFlush >= 10) {
-                flushToExcel();
-                newMatchesSinceFlush = 0;
-              }
-            }
-          }
-
-          if (pendingRows.some((r) => progress[String(r.row)]?.status !== "MATCHED")) {
-            adb(`am start --activity-clear-top -a android.intent.action.VIEW -d 'pinduoduo://com.xunmeng.pinduoduo/search_result.html?search_key=${encoded}'`);
-            await sleep(jitter(1450, 350));
-            await sortBySalesAndGetCardTargets();
-          }
-        }
-
-        const curSt = getPhoneTopBundle();
-        if (curSt.hasDrawer) {
-          adb("input tap 1135 359");
-          await sleep(400);
-        }
-        if (getPhoneTopBundle().isGoodsPage) {
-          adb("input keyevent 4");
-          await sleep(600);
-        }
+    // 2. 关键词兜底（若以图搜图未完全命中全部 SKU，或者商品无图片）
+    const remPending = pendingRows.filter((r) => progress[String(r.row)]?.status !== "MATCHED");
+    if (remPending.length > 0) {
+      const searchKws = cleanKeywords(lead);
+      for (const kw of searchKws) {
+        if (pendingRows.every((r) => progress[String(r.row)]?.status === "MATCHED")) break;
+        console.log(`  >>> [关键词兜底] "${kw}"`);
+        const encoded = encodeURIComponent(kw);
+        adb(`am start --activity-clear-top -a android.intent.action.VIEW -d 'pinduoduo://com.xunmeng.pinduoduo/search_result.html?search_key=${encoded}'`);
+        await sleep(jitter(1650, 500));
+        await inspectCardsOnCurrentSearchPage(pendingRows, progress, seenGoodsIds, `关键词:${kw}`);
       }
     }
 
@@ -1579,19 +1638,21 @@ async function runSourcingLoop() {
           row: r.row,
           spuId: r.spuId,
           skuId: r.skuId,
-          retail_price: Number(r.suggestPrice || r.basicPrice || 0),
-          status: "UNMATCHED_ABOVE_THRESHOLD",
+          retail_price: extractRetailPrice(r),
+          status: "UNMATCHED_PDD",
+          platform: "拼多多",
         };
       }
     }
     await fs.writeFile(PROGRESS_PATH, JSON.stringify(progress, null, 2), "utf8");
+    flushToExcel();
   }
 
   flushToExcel();
-  console.log("\nALL 2743 ROWS PROCESSED ON PHONE!");
+  console.log(`\nALL ROWS <= ${MAX_TARGET_ROW} PROCESSED ON PHONE (IMAGE SEARCH + KEYWORDS)!`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   runSourcingLoop().catch((e) => {
     console.error("Fatal phone worker v3 error:", e);
     process.exit(1);
