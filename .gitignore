@@ -1,9 +1,4 @@
-**/__pycache__/
+__pycache__/
 *.py[cod]
-.env
-.env.*
-runs/
-checkpoints/
-*.log
-node_modules/
-scratch/
+.DS_Store
+scripts/bin/mac_ocr

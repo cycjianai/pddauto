@@ -1,39 +1,56 @@
 {
-  "schema_version": "pddauto-capability-registry-v2",
+  "schema_version": "pddauto-capability-registry-v3",
   "capability_statuses": [
     "implemented",
     "runtime_guided",
     "planned"
   ],
   "platforms": {
+    "yuandian_saas": {
+      "display_name": "原点闪购管理后台",
+      "adapter_reference": "references/yuandian-saas-adapter.md",
+      "tasks": {
+        "yuandian_order_sourcing": {
+          "status": "implemented",
+          "uses_operations_workbook": false,
+          "uses_shared_execution_contract": true,
+          "always_load_detail_references": true,
+          "task_reference": "references/pricing-and-matching-contract.md",
+          "detail_references": [
+            "references/anti-risk-and-device-sop.md",
+            "references/tool-io-schemas.md"
+          ]
+        }
+      }
+    },
     "pdd": {
       "display_name": "拼多多",
-      "adapter_reference": "references/platforms/pdd.md",
+      "adapter_reference": "references/anti-risk-and-device-sop.md",
       "tasks": {
         "sourcing_and_similar_product_matching": {
           "status": "implemented",
           "uses_operations_workbook": false,
-          "uses_shared_execution_contract": false,
+          "uses_shared_execution_contract": true,
           "always_load_detail_references": true,
-          "task_reference": "references/tasks/sourcing-and-similar-product-matching.md",
+          "task_reference": "references/pricing-and-matching-contract.md",
           "detail_references": [
-            "references/platforms/pdd-sourcing-playbook.md"
+            "references/tool-io-schemas.md"
           ]
         }
       }
     },
     "ali1688": {
       "display_name": "1688源头工厂",
-      "adapter_reference": "references/platforms/ali1688-sourcing-playbook.md",
+      "adapter_reference": "references/anti-risk-and-device-sop.md",
       "tasks": {
         "visual_and_keyword_sourcing": {
           "status": "implemented",
           "uses_operations_workbook": false,
-          "uses_shared_execution_contract": false,
+          "uses_shared_execution_contract": true,
           "always_load_detail_references": true,
-          "task_reference": "references/tasks/visual-bounding-box-sop.md",
+          "task_reference": "references/pricing-and-matching-contract.md",
           "detail_references": [
-            "references/tasks/unit-alignment-spec.md"
+            "references/tool-io-schemas.md"
           ]
         }
       }

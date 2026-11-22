@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Progressive skill router for pddauto (PDD & 1688 sourcing and link extraction)."""
+"""Progressive skill router for pddauto v3.3 (Yuandian SaaS + PDD + 1688 dual-mode sourcing)."""
 
 from __future__ import annotations
 
@@ -13,8 +13,12 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 REGISTRY_PATH = Path(__file__).with_name("capability_registry.json")
 
-PLATFORMS = ("pdd", "ali1688")
-TASKS = ("sourcing_and_similar_product_matching", "visual_and_keyword_sourcing")
+PLATFORMS = ("yuandian_saas", "pdd", "ali1688")
+TASKS = (
+    "yuandian_order_sourcing",
+    "sourcing_and_similar_product_matching",
+    "visual_and_keyword_sourcing",
+)
 INTENTS = ("auto", "review", "diagnosis", "implementation", "execution")
 
 
@@ -67,7 +71,9 @@ def route(args: argparse.Namespace, registry: dict[str, Any]) -> tuple[dict[str,
     platform = args.platform
     if not platform:
         text = (args.request_text + " " + args.page_url).lower()
-        if "1688" in text or "阿里" in text:
+        if contains(text, r"saas\.fuliops\.cn", r"procurement-sourcing", r"原点闪购", r"采购寻源订单", r"寻源订单", r"yd-\d{8}-cg"):
+            platform = "yuandian_saas"
+        elif "1688" in text or "阿里" in text:
             platform = "ali1688"
         else:
             platform = "pdd"

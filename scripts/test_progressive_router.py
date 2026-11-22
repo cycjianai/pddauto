@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for pddauto progressive router."""
+"""Tests for pddauto v3.3 progressive router."""
 
 from __future__ import annotations
 
@@ -26,33 +26,50 @@ def run(*args: str, expected: int = 0) -> dict:
 
 def main() -> int:
     assert run("--validate-registry")["valid"] is True
+
+    yd_route = run(
+        "--request-text",
+        "控制9222浏览器，把原点闪购采购寻源订单里的商品找到采购链接并回填进去",
+        "--page-url",
+        "https://saas.fuliops.cn/procurement-sourcing",
+    )
+    assert yd_route["platform_adapter"] == "yuandian_saas"
+    assert yd_route["task_mode"] == "yuandian_order_sourcing"
+    assert yd_route["intent"] == "execution"
+    assert yd_route["load_order"] == [
+        "references/yuandian-saas-adapter.md",
+        "references/pricing-and-matching-contract.md",
+        "references/anti-risk-and-device-sop.md",
+        "references/tool-io-schemas.md",
+    ]
+
     pdd_route = run(
         "--request-text",
-        "当前主浏览器登录了牵牛花，拿spu搜主图去拼多多搜图，f列填商品链接，g列填规格，h列填结算链接，i列填下单比例，j列填采购价，k列填单位采购价",
+        "拿spu主图去拼多多真机搜同款，提取真实商品链接和结算链接回填表格",
     )
     assert pdd_route["platform_adapter"] == "pdd"
     assert pdd_route["task_mode"] == "sourcing_and_similar_product_matching"
     assert pdd_route["intent"] == "execution"
     assert pdd_route["load_order"] == [
-        "references/platforms/pdd.md",
-        "references/tasks/sourcing-and-similar-product-matching.md",
-        "references/platforms/pdd-sourcing-playbook.md",
+        "references/anti-risk-and-device-sop.md",
+        "references/pricing-and-matching-contract.md",
+        "references/tool-io-schemas.md",
     ]
 
     ali_route = run(
         "--request-text",
-        "用1688以图搜款在首页搜百货日用商品，注意多主体框选切换和55s冷却",
+        "用1688以图搜款静默抓取百货日用商品并走多模态拼图裁判",
     )
     assert ali_route["platform_adapter"] == "ali1688"
     assert ali_route["task_mode"] == "visual_and_keyword_sourcing"
     assert ali_route["intent"] == "execution"
     assert ali_route["load_order"] == [
-        "references/platforms/ali1688-sourcing-playbook.md",
-        "references/tasks/visual-bounding-box-sop.md",
-        "references/tasks/unit-alignment-spec.md",
+        "references/anti-risk-and-device-sop.md",
+        "references/pricing-and-matching-contract.md",
+        "references/tool-io-schemas.md",
     ]
 
-    print(json.dumps({"passed": True, "cases": 3}, ensure_ascii=False))
+    print(json.dumps({"passed": True, "cases": 4}, ensure_ascii=False))
     return 0
 
 
