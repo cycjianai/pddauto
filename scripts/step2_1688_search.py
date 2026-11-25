@@ -26,6 +26,58 @@ from lib.cdp_1688 import (
 )
 
 
+def _has_valid_pdd_artifact(workdir: Path, row: int) -> bool:
+    """Verify at least one non-blocked PDD search JSON (pdd_*/R{row}.json) exists on disk."""
+    for sub in sorted(workdir.glob("pdd*")):
+        if not sub.is_dir():
+            continue
+        fp = sub / f"R{row}.json"
+        if not fp.is_file():
+            continue
+        try:
+            data = json.loads(fp.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        if data.get("blocked") is True:
+            continue
+        if "cands" not in data and "candidates" not in data:
+            continue
+        if data.get("row") is not None and int(data["row"]) != row:
+            continue
+        return True
+    return False
+
+
+def enforce_pdd_first_before_1688(workdir: Path, rows: list[int]) -> None:
+    """HARD GATE (pddauto v3.4): Refuse to run 1688 search/detail on Round-1 PDD-locked rows
+    until real PDD search artifacts exist on disk (pdd_*/R{row}.json)."""
+    manifest_p = workdir / "manifest.json"
+    if not manifest_p.is_file():
+        return
+    try:
+        manifest = json.loads(manifest_p.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    locked_rows = {
+        int(it["row"])
+        for it in (manifest.get("rows") or [])
+        if it.get("row") is not None
+        and (it.get("platform_policy") == "pdd_first_lock" or it.get("route") == "pdd")
+    }
+    if not locked_rows:
+        return
+    violations = sorted({int(r) for r in rows if int(r) in locked_rows and not _has_valid_pdd_artifact(workdir, int(r))})
+    if violations:
+        sample = violations[:15]
+        raise RuntimeError(
+            f"[PDD_FIRST_GATE_BLOCKED] {len(violations)} row(s) are locked to Round-1 PDD "
+            f"(food/FMCG platform_policy='pdd_first_lock') and have ZERO PDD search artifacts on disk: {sample}. "
+            f"You MUST run step2_pdd_search.py FIRST (Round 1) before falling back to 1688!"
+        )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Step 2A: 1688 silent background search/detail engine")
     ap.add_argument("--workdir", required=True, help="Working directory containing store/ and output subdirs")
@@ -43,6 +95,27 @@ def main() -> int:
     args = ap.parse_args()
 
     workdir = Path(args.workdir).resolve()
+
+    # Pre-validate Round-1 PDD lock BEFORE even opening Chrome CDP so unsearched food/FMCG rows fail fast!
+    if args.mode == "img":
+        if args.rows_file:
+            _pre_rows = json.loads(Path(args.rows_file).read_text(encoding="utf-8"))
+        elif args.rows:
+            _pre_rows = json.loads(args.rows)
+        else:
+            raise SystemExit("--mode img requires --rows or --rows-file")
+        enforce_pdd_first_before_1688(workdir, [int(r) for r in _pre_rows])
+    elif args.mode == "kw":
+        if not args.jobs_file:
+            raise SystemExit("--mode kw requires --jobs-file")
+        _pre_jobs = json.loads(Path(args.jobs_file).read_text(encoding="utf-8"))
+        enforce_pdd_first_before_1688(workdir, [int(j["row"]) for j in _pre_jobs])
+    elif args.mode == "detail":
+        if not args.plan_file:
+            raise SystemExit("--mode detail requires --plan-file")
+        _pre_plan = json.loads(Path(args.plan_file).read_text(encoding="utf-8"))
+        enforce_pdd_first_before_1688(workdir, [int(p["row"]) for p in _pre_plan if p.get("row") is not None])
+
     sess, tab_id, cdp_base = open_silent_1688_session(args.cdp_port)
     print(f"[1688 SILENT] Attached to {cdp_base} tab={tab_id} (zero focus/mouse steal)", flush=True)
 

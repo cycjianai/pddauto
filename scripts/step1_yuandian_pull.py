@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib.cdp_yuandian import YuandianAdminClient
-from step1_prepare import classify_route, download_store_img
+from step1_prepare import build_platform_policy, classify_route, download_store_img
 
 
 def resolve_target_task_no(client: YuandianAdminClient, explicit_task_no: Optional[str]) -> str:
@@ -80,6 +80,12 @@ def build_manifest_from_task(
             retail = 0.0
         img_url = str(it.get("main_image_url") or "").strip()
 
+        category_txt = " ".join(
+            str(it.get(k) or "").strip()
+            for k in ("category", "category_name", "cat1", "cat2", "cat3", "first_category", "second_category")
+            if it.get(k)
+        )
+        route = classify_route(name, spec, category=category_txt)
         rows_data.append({
             "row": row_num,
             "yuandian_item_id": int(it["id"]),
@@ -87,11 +93,13 @@ def build_manifest_from_task(
             "skuid": skuid,
             "name": name,
             "spec": spec,
+            "category": category_txt,
             "retail": retail,
             "store_img_url": img_url,
             "store_img_local": "",
             "status": match_status,
-            "route": classify_route(name, spec),
+            "route": route,
+            **build_platform_policy(route),
             "existing_channel": str(it.get("channel") or ""),
         })
 
@@ -103,6 +111,7 @@ def build_manifest_from_task(
             list(pool.map(_dl, rows_data))
 
     return {
+        "policy_version": "v3.4",
         "source_mode": "yuandian_saas",
         "task_no": str(task.get("task_no") or ""),
         "platform": str(task.get("platform") or ""),
@@ -116,6 +125,7 @@ def build_manifest_from_task(
             k: sum(1 for x in rows_data if x["route"] == k)
             for k in ("1688", "pdd", "combo", "fresh")
         },
+        "pdd_first_locked_count": sum(1 for x in rows_data if x.get("platform_policy") == "pdd_first_lock"),
         "rows": rows_data,
     }
 

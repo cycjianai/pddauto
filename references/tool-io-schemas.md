@@ -188,12 +188,26 @@ python3 scripts/qnh_1688_validator.py \
     "img_url": ""
   },
   {
+    "row": 341,
+    "skuid": "1734489817187889998",
+    "visual_verified": true,
+    "source": "https://detail.1688.com/offer/778162913201.html",
+    "spec": "立顿绿茶25包*1盒",
+    "checkout": "https://detail.1688.com/offer/778162913201.html",
+    "units": 1,
+    "paid": 8.9,
+    "img_url": "https://cbu01.alicdn.com/img/ibank/xxx.jpg",
+    "pdd_fallback_reason": "pdd_low_margin",
+    "pdd_best_unit_price": 12.5
+  },
+  {
     "row": 94,
     "skuid": "1734489817187888888",
     "status_only": "组合商品"
   }
 ]
 ```
+> **v3.4 食品/快消品二轮回退 1688 必填字段**：凡 `platform_policy == "pdd_first_lock"`（或类目/标题归属食品/快消）的商品，若第二轮回退写入 `1688.com`，**必须**在磁盘存在非阻断的 `pdd_*/R{row}.json` 实搜记录，且在 `decisions.json` 显式声明 `"pdd_fallback_reason"`（仅允许 `"pdd_no_match"` 或 `"pdd_low_margin"`；选 `"pdd_low_margin"` 时可选填 `"pdd_best_unit_price"`，若毛利已 `≥50%` 代码直接拦截报错）。
 
 **执行后同步产出的双交付物**：
 1. 校验通过的 15 列标准 Excel（原子替换 + ZIP 校验 + 红队自检报告）；

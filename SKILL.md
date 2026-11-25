@@ -1,11 +1,11 @@
 ---
 name: pddauto
-description: 1688（双路径自适应：有牵牛花账号直连企业 1688 批量接口 0 滑块极速取真规格+导入前 100% 实库预检；无牵牛花账号走 Chrome CDP 100% 后台静默直读原始 skuInfoMap）+ 拼多多（Android 真机原生 App 防横幅智能词搜与相册单件原子流搜图，辅以 CDP 免拼收银台验价）双平台采购寻源、多模态大模型批量图文核验裁判、零人工备注逐字符原样规格强校验、常规店铺券/百亿补贴实付核价、双模式任务适配（模式 A：标准 15 列 Excel 原子回填与离线双向直检 HTML 看板；模式 B：原点闪购管理后台 `saas.fuliops.cn/procurement-sourcing` 12 列订单实时拉取/回填、动态规则同步、渠道对齐与红队自检）全流程 Skill (v3.3.0)。
+description: 1688（双路径自适应：有牵牛花账号直连企业 1688 批量接口 0 滑块极速取真规格+导入前 100% 实库预检；无牵牛花账号走 Chrome CDP 100% 后台静默直读原始 skuInfoMap）+ 拼多多（Android 真机原生 App 防横幅智能词搜与相册单件原子流搜图，辅以 CDP 免拼收银台验价）双平台采购寻源、食品/快消品第一轮拼多多物理硬锁（仅拼多多实搜无同款或毛利不达标方可转 1688）、多模态大模型批量图文核验裁判、零人工备注逐字符原样规格强校验、常规店铺券/百亿补贴实付核价、双模式任务适配（模式 A：标准 15 列 Excel 原子回填与离线双向直检 HTML 看板；模式 B：原点闪购管理后台 `saas.fuliops.cn/procurement-sourcing` 12 列订单实时拉取/回填、动态规则同步、渠道对齐与红队自检）全流程 Skill (v3.4.0)。
 ---
 
-# 1688 & 拼多多多模态采购寻源与双模式交付 Skill (`pddauto v3.3.0`)
+# 1688 & 拼多多多模态采购寻源与双模式交付 Skill (`pddauto v3.4.0`)
 
-本 Skill 是经 2,700+ 真实门店 SKU 实测、牵牛花 1688 接口导入验真与原点闪购管理后台联调沉淀的 **v3.3 生产标准架构**，支持：
+本 Skill 是经 2,700+ 真实门店 SKU 实测、牵牛花 1688 接口导入验真与原点闪购管理后台联调沉淀的 **v3.4 生产标准架构**，支持：
 - **双输入/输出模式自适应**：
   - **模式 A（本地 Excel 15 列工作簿模式）**：`step1_prepare.py` ➔ 通用双引擎寻源 & 多模态裁判 ➔ `step4_apply_and_export.py`（15 列原子回填 + 同步离线直检 HTML 看板）；
   - **模式 B（原点闪购管理后台实时订单模式）**：`step1_yuandian_pull.py`（从 9222 端口读取 `saas.fuliops.cn/procurement-sourcing` 当前订单与在线实时 `/rules`）➔ **100% 复用同一套 1688 + 拼多多真机 App + 视觉裁判高标准内核** ➔ `step4_yuandian_push.py`（零备注逐字节闸门 + `channel` 同步 + 服务端红队四项校验 + 安全停在「待回传」等人工结算）。
@@ -13,7 +13,7 @@ description: 1688（双路径自适应：有牵牛花账号直连企业 1688 批
 
 ---
 
-## 一、七大强制闸门（HARD GATES — 违背任何一条视为执行失败）
+## 一、八大强制闸门（HARD GATES — 违背任何一条视为执行失败）
 
 1. **【强制闸门 1：严禁盲填，必须过视觉拼图裁判】**
    - 严禁写脚本按正则/标题相似度直接把链接写入 Excel！
@@ -43,6 +43,13 @@ description: 1688（双路径自适应：有牵牛花账号直连企业 1688 批
 7. **【强制闸门 7：模式对应交付物强制验收】**
    - **模式 A（本地 Excel）**：`step4_apply_and_export.py` 每次提交 Excel 后**默认自动调用** `scripts/export_visual_audit_html.py`，基于最新落盘的 Excel 同步生成单文件离线直检看板 `<表名>_直检看板.html`，跑完必须同时交付 Excel 与同步 HTML 看板。
    - **模式 B（原点闪购后台）**：`step4_yuandian_push.py` 回填后默认静默刷新后台标签页并落盘 `yuandian_push_report.json`，确认四项红队自检全绿、`pending=0` 且状态为 `ready_to_deliver` 后交付清单与人工复核提示。
+8. **【强制闸门 8：食品与快消品「第一轮锁死拼多多」物理硬锁（不达毛利或无同款方可二轮转 1688）】**
+   - **第一轮硬锁对象（`platform_policy = "pdd_first_lock"`）**：所有**食品吃喝类**（零食、饮料、速食、粮油调味干货、营养冲调、酒水乳饮、茶叶）与**快消日化类**（洗护、护肤美妆、纸品/洗脸巾/湿巾、卫生巾、家清洗衣液、母婴纸尿裤、宠物食品）商品。
+   - **绝对禁止第一轮绕过拼多多抄近道**：**严禁**在未完成拼多多真机实搜前直接调用 1688 搜索，**严禁**直接沿用历史表自带的 1688 旧链或牵牛花 1688 缓存直接入表。
+   - **第二轮有条件放行 1688（双物理铁证缺一不可，无 CLI 绕过参数）**：只有当以下两项同时满足时，才允许转去 1688 补找并入表：
+     1. **磁盘实搜铁证**：`<workdir>/pdd_*/R{row}.json` 真实存在（且 `blocked != true`），证明第一轮已完成拼多多实搜；
+     2. **结构化回退声明**：`decisions.json` 必须显式填写 `"pdd_fallback_reason"`，仅允许两个合法值——`"pdd_no_match"`（拼多多实搜无相似可售同款）或 `"pdd_low_margin"`（拼多多有同款但毛利 `< 50%` 或价格倒挂；附带 `"pdd_best_unit_price"` 时代码会强制复核毛利确实 `< 50%`，若拼多多已达标则物理阻断转 1688）。
+   - **代码三点强拦截**：`step2_1688_search.py`、`step4_apply_and_export.py`、`step4_yuandian_push.py` 均已内置物理级拦截代码，凡未先在拼多多实搜就想搜 1688 或写 1688 链接的，直接报错阻断；红队自检强制核查 `pdd_first_unverified_1688 = 0`。
 
 ---
 
@@ -109,7 +116,7 @@ python3 scripts/step1_yuandian_pull.py \
      ```
      - 底层 `cdp_1688.py` 已升级直读 `window.context...skuModel.skuInfoMap` + `offerTitle`（保留连续多空格、3 层分号键、同名双层去重），严禁自己编造或改写规格；若目标规格不在默认首项且需核对实价，必须追加带 `"option": "目标一级规格名"` 的计划再跑一次 `--mode detail`。
 
-#### 通道 B — 拼多多真机原生 App 采集（吃喝 / 零食饮料 / 品牌个护美妆 / 小家电优先）
+#### 通道 B — 拼多多真机原生 App 采集（食品 / 快消品【第一轮物理锁死】，百货二轮兜底）
 1. **标品先跑防横幅智能关键词搜**（迷你装 `25g/30ml/180ml` 必须设 `"sort_sales": false`）：
    ```sh
    python3 scripts/step2_pdd_search.py --workdir <dir> --mode smart-kw --jobs-file <pdd_kw_jobs.json>
@@ -118,7 +125,9 @@ python3 scripts/step1_yuandian_pull.py \
    ```sh
    python3 scripts/step2_pdd_search.py --workdir <dir> --mode img --jobs-file <pdd_img_jobs.json>
    ```
-3. **跨平台互救**：1688 无合适源头或单价过高的百货切拼多多；拼多多仅剩高价零售装或断货的日化/文具/休闲品切 1688。
+3. **两轮流转红线（严禁破坏第一轮锁死）**：
+   - **食品 / 快消品（`pdd_first_lock`）**：第一轮**必须**先完成拼多多实搜（产出 `pdd_*/R{row}.json`）并经视觉核价；**仅当拼多多实搜无相似同款（`pdd_no_match`）或毛利未达 50%（`pdd_low_margin`）时**，才允许第二轮转入 1688 补找并在 `decisions.json` 填写 `pdd_fallback_reason`（否则 Step 2A 与 Step 4 均物理报错阻断）。
+   - **非快消百货 / 五金 / 文具 / 家居（`1688_first`）**：第一轮优先 1688；1688 无合适源头、起批量过高或单价过高时，可切拼多多兜底。
 4. **单品 SKU 实时点选核价**（遇到多 SKU 需确认选中后券后实价与缩略图时）：
    ```sh
    python3 scripts/step2_pdd_search.py --workdir <dir> --mode inspect-sku --gid <goods_id> --taps "目标规格词" --tag R<row>

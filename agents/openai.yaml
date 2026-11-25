@@ -1,4 +1,4 @@
 interface:
-  display_name: "1688 & 拼多多双模式采购寻源 (pddauto v3.3)"
-  short_description: "1688 静默后台/牵牛花企业 API + 拼多多真机 App 原子流寻源、多模态视觉裁判、零备注逐字节规格强校验，支持本地 15 列 Excel 与原点闪购管理后台双模式回填"
-  default_prompt: "使用 $pddauto：先判定任务模式（本地 15 列 Excel 走 step1_prepare / step4_apply_and_export；原点闪购管理后台 9222 订单走 step1_yuandian_pull / step4_yuandian_push），通过 1688 静默搜图（有牵牛花账号优先企业批量接口）与拼多多真机原生 App 采集，经多模态视觉拼图裁判并执行零人工备注逐字节规格强校验与红队自检后回填。"
+  display_name: "1688 & 拼多多双模式采购寻源 (pddauto v3.4)"
+  short_description: "1688 静默后台/牵牛花企业 API + 拼多多真机 App 原子流寻源、食品快消第一轮拼多多物理硬锁、多模态视觉裁判、零备注逐字节规格强校验，支持本地 15 列 Excel 与原点闪购管理后台双模式回填"
+  default_prompt: "使用 $pddauto：先判定任务模式（本地 15 列 Excel 走 step1_prepare / step4_apply_and_export；原点闪购管理后台 9222 订单走 step1_yuandian_pull / step4_yuandian_push），食品与快消品第一轮锁死拼多多真机实搜（仅无同款或毛利<50%方可带 pdd_fallback_reason 二轮转 1688），经多模态视觉拼图裁判并执行零人工备注逐字节规格强校验与红队自检后回填。"

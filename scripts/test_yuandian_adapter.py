@@ -11,7 +11,10 @@ from pathlib import Path
 SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
+from step1_prepare import build_platform_policy, classify_route
 from step1_yuandian_pull import build_manifest_from_task
+from step2_1688_search import enforce_pdd_first_before_1688
+from step4_apply_and_export import apply_decisions, run_redteam_audit
 from step4_yuandian_push import (
     infer_channel,
     prepare_patch_operations,
@@ -179,7 +182,110 @@ def main() -> int:
     report = run_yuandian_redteam_audit(SAMPLE_TASK)
     assert report["server_all_passed"] is True
 
-    print(json.dumps({"passed": True, "tests": 9}, ensure_ascii=False))
+    # 10. v3.4 classify_route with category & expanded food/FMCG keywords (including R209 diaper & food snacks)
+    assert classify_route("蓓秀 山茶油婴儿纸尿裤 XL码", "XL", category="母婴用品/尿裤/尿不湿") == "pdd"
+    assert classify_route("叻滋滋 韩式牛肉味大豆素肉 16g/包", "16g/包") == "pdd"
+    assert classify_route("金龙鱼 优质东北大米 5kg/袋", "5kg") == "pdd"
+    assert classify_route("立顿 绿茶袋泡茶50g/盒", "25包") == "pdd"
+    assert classify_route("新款原创毛巾绣刺绣布贴 1个", "1个") == "1688"
+    # Anti-false-positive checks on decorative words (糖果色浴巾 / 奶茶玻璃杯 / 面膜收纳盒 / 防晒口罩 / 化妆刷)
+    assert classify_route("【颜色可选】糖果条绒浴巾加厚大浴巾70*140cm", "1条") == "1688"
+    assert classify_route("ins网红餐厅宽口果茶杯玻璃杯子奶茶饮品杯", "385ml") == "1688"
+    assert classify_route("透明桌面收纳盒分类整理收纳篮面膜收纳盒", "1个") == "1688"
+    assert classify_route("立体白色口罩一次性三层防护防晒显脸小", "1个") == "1688"
+    assert classify_route("镰刀鼻影刷化妆刷修容刷", "1支", category="彩妆香水 美妆工具 化妆刷") == "1688"
+    assert build_platform_policy("pdd")["platform_policy"] == "pdd_first_lock"
+
+    # 11. v3.4 Step 2A hard gate: block 1688 search on PDD-first row without PDD disk artifact
+    with tempfile.TemporaryDirectory() as td:
+        wd = Path(td)
+        m = build_manifest_from_task(SAMPLE_TASK, wd, only_pending=True, download_images=False)
+        (wd / "manifest.json").write_text(json.dumps(m, ensure_ascii=False), encoding="utf-8")
+        # Row 2 is 1688_first -> allowed immediately
+        enforce_pdd_first_before_1688(wd, [2])
+        # Row 3 (火锅蘸料) is pdd_first_lock -> BLOCKED without pdd_*/R3.json!
+        expect_raises(lambda: enforce_pdd_first_before_1688(wd, [3]), "PDD_FIRST_GATE_BLOCKED")
+        # Blocked PDD artifact (blocked=True) does NOT unlock 1688!
+        (wd / "pdd_kw").mkdir()
+        (wd / "pdd_kw" / "R3.json").write_text(json.dumps({"row": 3, "blocked": True, "cands": []}), encoding="utf-8")
+        expect_raises(lambda: enforce_pdd_first_before_1688(wd, [3]), "PDD_FIRST_GATE_BLOCKED")
+        # Real non-blocked PDD search artifact unlocks Round-2 1688 search!
+        (wd / "pdd_kw" / "R3.json").write_text(json.dumps({"row": 3, "blocked": False, "cands": []}), encoding="utf-8")
+        enforce_pdd_first_before_1688(wd, [2, 3])
+
+        # 12. v3.4 Step 4B (Yuandian) PDD-first gate: block 1688 without PDD evidence, without reason, or if PDD margin >= 50%
+        card_index_fb = {"892914632446": {"小熊头"}, "777000111222": {"香辣蘸料120g*10袋"}}
+        fb_1688_base = {
+            "row": 3,
+            "skuid": "1992965625605226587",
+            "visual_verified": True,
+            "source": "https://detail.1688.com/offer/777000111222.html",
+            "spec": "香辣蘸料120g*10袋",
+            "checkout": "https://detail.1688.com/offer/777000111222.html",
+            "units": 10,
+            "paid": 20.0,
+        }
+        # 12a: No PDD evidence dir -> REJECTED
+        expect_raises(
+            lambda: prepare_patch_operations(SAMPLE_TASK, [fb_1688_base], card_index_fb, pdd_dirs=[]),
+            "PDD-First Round-1 Gate",
+        )
+        # 12b: Has PDD evidence, but missing pdd_fallback_reason -> REJECTED
+        expect_raises(
+            lambda: prepare_patch_operations(SAMPLE_TASK, [fb_1688_base], card_index_fb, pdd_dirs=[wd / "pdd_kw"]),
+            "pdd_fallback_reason",
+        )
+        # 12c: pdd_low_margin claimed, but pdd_best_unit_price=2.5 vs retail=5.5 (54.5% >= 50%) -> REJECTED!
+        fb_cheat = dict(fb_1688_base, pdd_fallback_reason="pdd_low_margin", pdd_best_unit_price=2.5)
+        expect_raises(
+            lambda: prepare_patch_operations(SAMPLE_TASK, [fb_cheat], card_index_fb, pdd_dirs=[wd / "pdd_kw"]),
+            "PDD-First Margin Gate",
+        )
+        # 12d: Valid PDD evidence + pdd_low_margin (pdd_best_unit_price=3.5 vs retail=5.5 -> 36.4% < 50%) -> PASS!
+        fb_ok = dict(fb_1688_base, pdd_fallback_reason="pdd_low_margin", pdd_best_unit_price=3.5)
+        ops_fb = prepare_patch_operations(SAMPLE_TASK, [fb_ok], card_index_fb, pdd_dirs=[wd / "pdd_kw"])
+        assert len(ops_fb) == 1 and ops_fb[0][3]["channel"] == "1688"
+
+        # 13. v3.4 Step 4A (Excel) PDD-first gate + Red-Team Audit
+        import openpyxl
+
+        xlsx_p = wd / "test.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "门店商品"
+        ws.append(["SPUID", "SKUID", "分配人", "商品名称", "规格名称", "当前原价", "主图链接", "供货商品链接", "供货规格", "结算链接", "下单比例", "采购价", "单位采购价", "是否匹配", "供货商主图"])
+        ws.append(["SPU1", "SKU_FOOD_1", "", "海天 味极鲜酱油 380ml/瓶", "380ml/瓶", 10.0, "", "", "", "", "", "", "", "未匹配", ""])
+        wb.save(xlsx_p)
+
+        dec_no_ev = wd / "dec_bad.json"
+        dec_no_ev.write_text(json.dumps([{
+            "row": 2,
+            "skuid": "SKU_FOOD_1",
+            "visual_verified": True,
+            "source": "https://detail.1688.com/offer/777000111222.html",
+            "spec": "香辣蘸料120g*10袋",
+            "units": 10,
+            "paid": 40.0,
+            "img_url": "https://cbu01.alicdn.com/img/ibank/test.jpg",
+            "pdd_fallback_reason": "pdd_no_match",
+        }], ensure_ascii=False), encoding="utf-8")
+        # Row 2 has NO pdd_kw/R2.json -> BLOCKED even without manifest.json!
+        expect_raises(
+            lambda: apply_decisions(xlsx_p, "门店商品", dec_no_ev, pdd_dirs=[wd / "pdd_kw"]),
+            "PDD-First Round-1 Gate",
+        )
+        # Create genuine PDD search evidence R2.json -> PASS!
+        (wd / "pdd_kw" / "R2.json").write_text(json.dumps({"row": 2, "blocked": False, "cands": []}), encoding="utf-8")
+        n_upd = apply_decisions(xlsx_p, "门店商品", dec_no_ev, pdd_dirs=[wd / "pdd_kw"])
+        assert n_upd == 1
+        rep_ok = run_redteam_audit(xlsx_p, "门店商品", pdd_dirs=[wd / "pdd_kw"])
+        assert rep_ok["pdd_first_1688_total"] == 1 and len(rep_ok["pdd_first_unverified_1688"]) == 0
+        # Remove R2.json -> Red-Team Audit immediately flags unverified 1688 on food row!
+        (wd / "pdd_kw" / "R2.json").unlink()
+        rep_bad = run_redteam_audit(xlsx_p, "门店商品", pdd_dirs=[wd / "pdd_kw"])
+        assert len(rep_bad["pdd_first_unverified_1688"]) == 1
+
+    print(json.dumps({"passed": True, "tests": 13}, ensure_ascii=False))
     return 0
 
 

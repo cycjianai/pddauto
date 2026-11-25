@@ -281,9 +281,9 @@ def open_silent_1688_session(port: Optional[int] = None) -> Tuple[CDPSession, st
         ]
         target = next((pg for pg in pages if "1688.com" in (pg.get("url") or "")), None)
         if target is None:
-            # Prefer an empty/new-tab page if available; NEVER hijack Yuandian/QNH/merchant business tabs
+            # Only reuse an empty blank/newtab page; NEVER hijack ANY existing user/business/media tab
             target = next(
-                (pg for pg in pages if (pg.get("url") or "") in ("about:blank", "chrome://newtab/") or not _is_protected_tab(pg.get("url") or "")),
+                (pg for pg in pages if (pg.get("url") or "") in ("about:blank", "chrome://newtab/")),
                 None,
             )
         if target is None:

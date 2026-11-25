@@ -35,8 +35,13 @@ from step4_apply_and_export import (
     ALLOWED_STATUS_ONLY,
     FORBIDDEN_SPEC_PATTERNS,
     _load_1688_card_index,
+    collect_pdd_evidence_dirs,
+    has_pdd_search_evidence,
+    load_manifest_index,
+    validate_platform_policy_gate,
     validate_verbatim_spec,
 )
+from step1_prepare import classify_route
 
 
 def infer_channel(source_url: str, explicit_channel: Optional[str] = None) -> str:
@@ -79,8 +84,14 @@ def prepare_patch_operations(
     decisions: List[Dict[str, Any]],
     card_index: Dict[str, set],
     allow_unverified_spec: bool = False,
+    manifest_by_skuid: Optional[Dict[str, Dict[str, Any]]] = None,
+    manifest_by_row: Optional[Dict[int, Dict[str, Any]]] = None,
+    pdd_dirs: Optional[List[Path]] = None,
 ) -> List[Tuple[int, int, str, Dict[str, Any]]]:
     """Validate every decision against live task state and build `(row, item_id, skuid, patch_payload)` list."""
+    m_by_sk = manifest_by_skuid or {}
+    m_by_r = manifest_by_row or {}
+    ev_pdd_dirs = pdd_dirs or []
     task_status = str(task.get("status") or "")
     if task_status in ("completed", "cancelled"):
         raise RuntimeError(f"Task {task.get('task_no')} is already finalized (status={task_status}); refusing to edit.")
@@ -160,6 +171,26 @@ def prepare_patch_operations(
         )
         validate_pdd_checkout_url(row_num, checkout)
 
+        # HARD GATE (v3.4): Round-1 PDD Lock for food/FMCG — block 1688 without real PDD disk evidence + fallback reason
+        live_cat = " ".join(
+            str(live_item.get(k) or "").strip()
+            for k in ("category", "category_name", "cat1", "cat2", "cat3", "first_category", "second_category")
+            if live_item.get(k)
+        )
+        validate_platform_policy_gate(
+            row=row_num,
+            skuid=sk_exp,
+            name=str(live_item.get("product_name") or "").strip(),
+            spec=str(live_item.get("spec_name") or "").strip(),
+            source=source,
+            retail=Decimal(str(live_item.get("retail_price") or 0)),
+            decision_item=it,
+            manifest_by_skuid=m_by_sk,
+            manifest_by_row=m_by_r,
+            pdd_dirs=ev_pdd_dirs,
+            category=live_cat,
+        )
+
         units = Decimal(str(it["units"]))
         paid = Decimal(str(it["paid"]))
         if units <= 0 or paid <= 0:
@@ -184,7 +215,12 @@ def prepare_patch_operations(
     return ops
 
 
-def run_yuandian_redteam_audit(task: Dict[str, Any]) -> Dict[str, Any]:
+def run_yuandian_redteam_audit(
+    task: Dict[str, Any],
+    manifest_by_skuid: Optional[Dict[str, Dict[str, Any]]] = None,
+    manifest_by_row: Optional[Dict[int, Dict[str, Any]]] = None,
+    pdd_dirs: Optional[List[Path]] = None,
+) -> Dict[str, Any]:
     """Run local + server red-team integrity checks on the live Yuandian task snapshot."""
     server_checks = dict(task.get("red_team_checks") or {})
     bad_spec_annotations = []
@@ -192,7 +228,11 @@ def run_yuandian_redteam_audit(task: Dict[str, Any]) -> Dict[str, Any]:
     single_pack_low = []
     inversions = []
     channel_mismatches = []
+    pdd_first_unverified_1688 = []
     counts = {"matched": 0, "unmatched": 0, "pending": 0}
+    m_by_sk = manifest_by_skuid or {}
+    m_by_r = manifest_by_row or {}
+    ev_pdd_dirs = pdd_dirs or []
 
     for it in (task.get("items") or []):
         st = str(it.get("match_status") or "pending")
@@ -206,6 +246,17 @@ def run_yuandian_redteam_audit(task: Dict[str, Any]) -> Dict[str, Any]:
         expected_ch = infer_channel(src)
         if expected_ch in ("1688", "pdd") and ch != expected_ch:
             channel_mismatches.append((r, ch, expected_ch))
+        if expected_ch == "1688" and ev_pdd_dirs:
+            sk = str(it.get("skuid") or "").strip()
+            pname = str(it.get("product_name") or "").strip()
+            pspec = str(it.get("spec_name") or "").strip()
+            m_it = m_by_sk.get(sk) or m_by_r.get(r)
+            is_pdd_first = (
+                (m_it is not None and (m_it.get("platform_policy") == "pdd_first_lock" or m_it.get("route") == "pdd"))
+                or classify_route(pname, pspec) == "pdd"
+            )
+            if is_pdd_first and not has_pdd_search_evidence(r, ev_pdd_dirs):
+                pdd_first_unverified_1688.append((r, sk, pname[:28]))
         for pat, desc in FORBIDDEN_SPEC_PATTERNS:
             if pat.search(spec_val):
                 bad_spec_annotations.append((r, desc, spec_val[:50]))
@@ -235,6 +286,7 @@ def run_yuandian_redteam_audit(task: Dict[str, Any]) -> Dict[str, Any]:
         "server_all_passed": bool(server_checks) and all(bool(v) for v in server_checks.values()),
         "settlement_preview": task.get("settlement_preview"),
         "channel_mismatches": channel_mismatches,
+        "pdd_first_unverified_1688": pdd_first_unverified_1688,
         "bad_spec_annotations": bad_spec_annotations,
         "tiny_cost_suspects": tiny_cost,
         "single_pack_low_margin": single_pack_low,
@@ -245,12 +297,14 @@ def run_yuandian_redteam_audit(task: Dict[str, Any]) -> Dict[str, Any]:
     print(f"  Server Checks: {server_checks} (all_passed={report['server_all_passed']})")
     print(f"  Settlement Preview (NOT auto-settled): {report['settlement_preview']}")
     print(
-        f"  channel_mismatches={len(channel_mismatches)} | bad_spec_annotations={len(bad_spec_annotations)} | "
+        f"  channel_mismatches={len(channel_mismatches)} | pdd_first_unverified_1688={len(pdd_first_unverified_1688)} | "
+        f"bad_spec_annotations={len(bad_spec_annotations)} | "
         f"tiny_cost_suspects={len(tiny_cost)} | single_pack_low_margin={len(single_pack_low)} | "
         f"price_inversions={len(inversions)}"
     )
     for tag, items_list in (
         ("CHANNEL_MISMATCH", channel_mismatches),
+        ("PDD_FIRST_UNVERIFIED_1688", pdd_first_unverified_1688),
         ("BAD_SPEC", bad_spec_annotations),
         ("TINY_COST", tiny_cost),
         ("SINGLE_PACK_LOW", single_pack_low),
@@ -306,11 +360,18 @@ def main() -> int:
                         dirs_to_load.append(cand)
             card_index = _load_1688_card_index(dirs_to_load)
 
+            manifest_p = (workdir / "manifest.json") if (workdir and (workdir / "manifest.json").is_file()) else (decisions_p.parent / "manifest.json")
+            m_by_sk, m_by_r = load_manifest_index(manifest_p if manifest_p.is_file() else None)
+            ev_pdd_dirs = collect_pdd_evidence_dirs(base_dirs=[d for d in (workdir, decisions_p.parent) if d])
+
             ops = prepare_patch_operations(
                 task=live_task,
                 decisions=decisions,
                 card_index=card_index,
                 allow_unverified_spec=args.allow_unverified_spec,
+                manifest_by_skuid=m_by_sk,
+                manifest_by_row=m_by_r,
+                pdd_dirs=ev_pdd_dirs,
             )
 
             if args.dry_run:
@@ -334,7 +395,10 @@ def main() -> int:
             if not args.no_reload:
                 client.reload_tab_silently()
 
-        report = run_yuandian_redteam_audit(live_task)
+        audit_m_p = (workdir / "manifest.json") if (workdir and (workdir / "manifest.json").is_file()) else None
+        am_sk, am_r = load_manifest_index(audit_m_p)
+        am_pdd = collect_pdd_evidence_dirs(base_dirs=[workdir] if workdir else [])
+        report = run_yuandian_redteam_audit(live_task, manifest_by_skuid=am_sk, manifest_by_row=am_r, pdd_dirs=am_pdd)
         if workdir:
             (workdir / "yuandian_push_report.json").write_text(
                 json.dumps(report, ensure_ascii=False, indent=2),

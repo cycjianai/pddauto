@@ -32,7 +32,12 @@ from typing import Any, Dict, List, Optional, Set
 
 import openpyxl
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from step1_prepare import classify_route
+
 ALLOWED_STATUS_ONLY = {"组合商品", "生鲜蔬果本地采购", "不匹配", "未匹配"}
+ALLOWED_PDD_FALLBACK_REASONS = {"pdd_no_match", "pdd_low_margin"}
+TARGET_MARGIN_RATIO = Decimal("0.5")
 
 # Artificial human annotations strictly forbidden in Col I (供货规格) unless verbatim inside supplier skuMap
 FORBIDDEN_SPEC_PATTERNS = [
@@ -153,12 +158,165 @@ def validate_verbatim_spec(
                 )
 
 
+def collect_pdd_evidence_dirs(
+    base_dirs: Optional[List[Path]] = None,
+    explicit_pdd_dirs: Optional[List[Path]] = None,
+) -> List[Path]:
+    """Discover all directories that may hold PDD search JSON artifacts (R{row}.json)."""
+    seen: Set[Path] = set()
+    out: List[Path] = []
+
+    def _add(p: Path) -> None:
+        try:
+            rp = p.resolve()
+        except Exception:
+            rp = p
+        if rp.is_dir() and rp not in seen:
+            seen.add(rp)
+            out.append(rp)
+
+    for d in (explicit_pdd_dirs or []):
+        _add(d)
+        if d.parent.is_dir():
+            for sib in sorted(d.parent.glob("pdd*")):
+                _add(sib)
+
+    for b in (base_dirs or []):
+        if not b or not b.is_dir():
+            continue
+        if b.name.startswith("pdd"):
+            _add(b)
+        for sub in sorted(b.glob("pdd*")):
+            _add(sub)
+    return out
+
+
+def has_pdd_search_evidence(row: int, pdd_dirs: List[Path]) -> bool:
+    """Verify at least one non-blocked PDD search JSON (R{row}.json) exists on disk."""
+    fname = f"R{row}.json"
+    for d in pdd_dirs:
+        fp = d / fname
+        if not fp.is_file():
+            continue
+        try:
+            data = json.loads(fp.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        if data.get("blocked") is True:
+            continue
+        if "cands" not in data and "candidates" not in data:
+            continue
+        if data.get("row") is not None and int(data["row"]) != row:
+            continue
+        return True
+    return False
+
+
+def load_manifest_index(manifest_path: Optional[Path]) -> tuple[Dict[str, Dict[str, Any]], Dict[int, Dict[str, Any]]]:
+    """Load manifest.json indexed by skuid and row number."""
+    by_skuid: Dict[str, Dict[str, Any]] = {}
+    by_row: Dict[int, Dict[str, Any]] = {}
+    if not manifest_path or not manifest_path.is_file():
+        return by_skuid, by_row
+    try:
+        m = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return by_skuid, by_row
+    for it in (m.get("rows") or []):
+        sk = str(it.get("skuid") or "").strip()
+        if sk:
+            by_skuid[sk] = it
+        if it.get("row") is not None:
+            by_row[int(it["row"])] = it
+    return by_skuid, by_row
+
+
+def is_row_pdd_first_locked(
+    row: int,
+    skuid: str,
+    name: str,
+    spec: str,
+    manifest_by_skuid: Dict[str, Dict[str, Any]],
+    manifest_by_row: Dict[int, Dict[str, Any]],
+    category: str = "",
+) -> bool:
+    """Return True if this SKU is locked to Round-1 PDD search (food/FMCG)."""
+    m_item = manifest_by_skuid.get(skuid) or manifest_by_row.get(row)
+    if m_item is not None:
+        pol = str(m_item.get("platform_policy") or "").strip()
+        if pol == "pdd_first_lock":
+            return True
+        if pol in ("1688_first", "no_sourcing"):
+            # Double-check category if manifest was built before v3.4
+            cat = category or " ".join(str(m_item.get(k) or "") for k in ("category", "cat1", "cat2", "cat3"))
+            return classify_route(name, spec, category=cat) == "pdd"
+        if m_item.get("route") == "pdd":
+            return True
+    return classify_route(name, spec, category=category) == "pdd"
+
+
+def validate_platform_policy_gate(
+    row: int,
+    skuid: str,
+    name: str,
+    spec: str,
+    source: str,
+    retail: Decimal,
+    decision_item: Dict[str, Any],
+    manifest_by_skuid: Dict[str, Dict[str, Any]],
+    manifest_by_row: Dict[int, Dict[str, Any]],
+    pdd_dirs: List[Path],
+    category: str = "",
+) -> None:
+    """HARD GATE (pddauto v3.4): Round-1 PDD Lock for food/FMCG items.
+    Writing a 1688 URL to a PDD-first item is ONLY permitted when:
+      1) Real non-blocked PDD search evidence (pdd_*/R{row}.json) exists on disk; AND
+      2) decision explicitly states pdd_fallback_reason in {'pdd_no_match', 'pdd_low_margin'}; AND
+      3) If pdd_fallback_reason == 'pdd_low_margin' and pdd_best_unit_price is given, margin < 50%.
+    """
+    if "1688.com" not in source:
+        return
+    if not is_row_pdd_first_locked(row, skuid, name, spec, manifest_by_skuid, manifest_by_row, category=category):
+        return
+
+    if not has_pdd_search_evidence(row, pdd_dirs):
+        raise RuntimeError(
+            f"Row {row} ({skuid}) REJECTED (PDD-First Round-1 Gate): food/FMCG item '{name[:28]}' is locked to "
+            f"Round-1 PDD, but ZERO PDD search artifacts (pdd_*/R{row}.json) exist on disk! "
+            f"You MUST run step2_pdd_search.py FIRST before falling back to 1688."
+        )
+
+    reason = str(decision_item.get("pdd_fallback_reason") or "").strip()
+    if reason not in ALLOWED_PDD_FALLBACK_REASONS:
+        raise RuntimeError(
+            f"Row {row} ({skuid}) REJECTED (PDD-First Round-1 Gate): falling back to 1688 on a PDD-first "
+            f"food/FMCG item requires explicit 'pdd_fallback_reason' in {sorted(ALLOWED_PDD_FALLBACK_REASONS)}, "
+            f"got {reason!r}."
+        )
+
+    if reason == "pdd_low_margin" and decision_item.get("pdd_best_unit_price") not in (None, "") and retail > 0:
+        pdd_uc = Decimal(str(decision_item["pdd_best_unit_price"]))
+        if pdd_uc <= 0:
+            raise RuntimeError(f"Row {row} invalid pdd_best_unit_price={pdd_uc}")
+        pdd_margin = Decimal("1") - (pdd_uc / retail)
+        if pdd_margin >= TARGET_MARGIN_RATIO:
+            raise RuntimeError(
+                f"Row {row} ({skuid}) REJECTED (PDD-First Margin Gate): PDD best unit price ¥{pdd_uc} already "
+                f"achieves {float(pdd_margin) * 100:.1f}% margin (>=50%) vs retail ¥{retail}; "
+                f"falling back to 1688 is FORBIDDEN!"
+            )
+
+
 def apply_decisions(
     excel_path: Path,
     sheet_name: str,
     decisions_path: Path,
     acard_dirs: Optional[List[Path]] = None,
     allow_unverified_spec: bool = False,
+    manifest_path: Optional[Path] = None,
+    pdd_dirs: Optional[List[Path]] = None,
 ) -> int:
     items: List[Dict[str, Any]] = json.loads(decisions_path.read_text(encoding="utf-8"))
     if not isinstance(items, list):
@@ -172,6 +330,14 @@ def apply_decisions(
         if cand_dir.is_dir() and cand_dir not in dirs_to_load:
             dirs_to_load.append(cand_dir)
     card_index = _load_1688_card_index(dirs_to_load)
+
+    # Auto-discover manifest.json & PDD search evidence directories for Round-1 PDD Lock Gate
+    resolved_manifest = manifest_path if (manifest_path and manifest_path.is_file()) else (decisions_path.parent / "manifest.json")
+    manifest_by_skuid, manifest_by_row = load_manifest_index(resolved_manifest if resolved_manifest.is_file() else None)
+    evidence_pdd_dirs = collect_pdd_evidence_dirs(
+        base_dirs=[decisions_path.parent, resolved_manifest.parent if resolved_manifest else decisions_path.parent],
+        explicit_pdd_dirs=pdd_dirs,
+    )
 
     wb = openpyxl.load_workbook(excel_path, data_only=False)
     ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
@@ -227,6 +393,20 @@ def apply_decisions(
             raise RuntimeError(f"Row {r} invalid units={units} or paid={paid}")
 
         retail = Decimal(str(ws.cell(r, 6).value or 0))
+
+        # HARD GATE (v3.4): Round-1 PDD Lock for food/FMCG — block 1688 without real PDD disk evidence + fallback reason
+        validate_platform_policy_gate(
+            row=r,
+            skuid=sku_expected,
+            name=str(ws.cell(r, 4).value or "").strip(),
+            spec=str(ws.cell(r, 5).value or "").strip(),
+            source=source,
+            retail=retail,
+            decision_item=it,
+            manifest_by_skuid=manifest_by_skuid,
+            manifest_by_row=manifest_by_row,
+            pdd_dirs=evidence_pdd_dirs,
+        )
         if retail > 0:
             margin = Decimal("1") - (paid / units) / retail
             status = "已核可采购" if margin >= Decimal("0.5") else "已核同款(毛利<50%)"
@@ -277,11 +457,22 @@ def apply_decisions(
     return updated
 
 
-def run_redteam_audit(excel_path: Path, sheet_name: str) -> Dict[str, Any]:
+def run_redteam_audit(
+    excel_path: Path,
+    sheet_name: str,
+    manifest_path: Optional[Path] = None,
+    pdd_dirs: Optional[List[Path]] = None,
+) -> Dict[str, Any]:
     with zipfile.ZipFile(excel_path) as z:
         bad = z.testzip()
         if bad:
             raise RuntimeError(f"ZIP CORRUPTION DETECTED: {bad}")
+
+    manifest_by_skuid, manifest_by_row = load_manifest_index(manifest_path)
+    evidence_pdd_dirs = collect_pdd_evidence_dirs(
+        base_dirs=[manifest_path.parent] if (manifest_path and manifest_path.is_file()) else [],
+        explicit_pdd_dirs=pdd_dirs,
+    )
 
     wb = openpyxl.load_workbook(excel_path, data_only=False)
     ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
@@ -296,11 +487,15 @@ def run_redteam_audit(excel_path: Path, sheet_name: str) -> Dict[str, Any]:
     tiny_cost = []
     single_pack_low = []
     inversions = []
+    pdd_first_1688_total = 0
+    pdd_first_unverified_1688 = []
 
     for r in range(2, ws.max_row + 1):
         name = str(ws.cell(r, 4).value or "").strip()
         if not name and not ws.cell(r, 1).value:
             continue
+        skuid = str(ws.cell(r, 2).value or "").strip()
+        store_spec = str(ws.cell(r, 5).value or "").strip()
         st = str(ws.cell(r, 14).value or "").strip()
         cnt[st or "(空)"] += 1
         src = str(ws.cell(r, 8).value or "").strip()
@@ -319,6 +514,10 @@ def run_redteam_audit(excel_path: Path, sheet_name: str) -> Dict[str, Any]:
                 plat["1688"] += 1
                 if not o_val.startswith("http"):
                     miss_o_1688 += 1
+                if is_row_pdd_first_locked(r, skuid, name, store_spec, manifest_by_skuid, manifest_by_row):
+                    pdd_first_1688_total += 1
+                    if evidence_pdd_dirs and not has_pdd_search_evidence(r, evidence_pdd_dirs):
+                        pdd_first_unverified_1688.append((r, skuid, name[:28]))
             elif "yangkeduo.com" in src or "pinduoduo.com" in src:
                 plat["拼多多"] += 1
                 if "alicdn.com" in o_val:
@@ -356,6 +555,8 @@ def run_redteam_audit(excel_path: Path, sheet_name: str) -> Dict[str, Any]:
         "stale_o_pdd": stale_o_pdd,
         "miss_o_1688": miss_o_1688,
         "bad_spec_annotations": bad_spec_annotations,
+        "pdd_first_1688_total": pdd_first_1688_total,
+        "pdd_first_unverified_1688": pdd_first_unverified_1688,
         "tiny_cost_suspects": tiny_cost,
         "single_pack_low_margin": single_pack_low,
         "inversions": inversions,
@@ -365,8 +566,11 @@ def run_redteam_audit(excel_path: Path, sheet_name: str) -> Dict[str, Any]:
     print(
         f"  bad_formula={bad_formula} | stale_c_matched={stale_c_matched} | "
         f"stale_o_pdd={stale_o_pdd} | miss_o_1688={miss_o_1688} | "
-        f"bad_spec_annotations={len(bad_spec_annotations)}"
+        f"bad_spec_annotations={len(bad_spec_annotations)} | "
+        f"pdd_first_1688={pdd_first_1688_total} (unverified_no_pdd_evidence={len(pdd_first_unverified_1688)})"
     )
+    for x in pdd_first_unverified_1688[:10]:
+        print("   [PDD_FIRST_UNVERIFIED_1688]", x)
     for x in bad_spec_annotations[:10]:
         print("   [BAD_SPEC]", x)
     print(f"  tiny_cost_suspects (possible single-piece miscount): {len(tiny_cost)}")
@@ -386,15 +590,27 @@ def main() -> int:
     ap.add_argument("--excel", required=True, help="Target 15-column Excel workbook path")
     ap.add_argument("--sheet", default="门店商品", help="Worksheet name (default 门店商品)")
     ap.add_argument("--decisions", default=None, help="Path to visually-verified decisions.json")
+    ap.add_argument("--manifest", default=None, help="Optional path to manifest.json (auto-discovered next to decisions.json if omitted)")
     ap.add_argument("--acard-dirs", default="", help="Comma-separated dirs containing 1688 acard/sku_live JSONs for strict verbatim spec validation")
     ap.add_argument("--allow-unverified-spec", action="store_true", help="Emergency bypass for verbatim spec check (NOT recommended)")
     ap.add_argument("--audit-only", action="store_true", help="Skip Excel write; run audit + HTML export only")
     ap.add_argument("--html-out", default=None, help="Output HTML path (default: <excel_dir>/<excel_stem>_直检看板.html)")
-    ap.add_argument("--pdd-img-dirs", default="", help="Comma-separated dirs/globs containing PDD R*_hero.jpg to embed")
+    ap.add_argument("--pdd-img-dirs", default="", help="Comma-separated dirs/globs containing PDD R*_hero.jpg and R*.json evidence")
     ap.add_argument("--no-html", action="store_true", help="Skip HTML generation (NOT recommended for final delivery)")
     args = ap.parse_args()
 
     excel_p = Path(args.excel).resolve()
+    pdd_dirs = [Path(s.strip()).resolve() for s in args.pdd_img_dirs.split(",") if s.strip()]
+    manifest_p = Path(args.manifest).resolve() if args.manifest else None
+    if not manifest_p and args.decisions:
+        cand_m = Path(args.decisions).resolve().parent / "manifest.json"
+        if cand_m.is_file():
+            manifest_p = cand_m
+    if not manifest_p and pdd_dirs:
+        cand_m = pdd_dirs[0].parent / "manifest.json"
+        if cand_m.is_file():
+            manifest_p = cand_m
+
     if not args.audit_only:
         if not args.decisions:
             raise SystemExit("Provide --decisions <file.json> or pass --audit-only")
@@ -405,9 +621,11 @@ def main() -> int:
             Path(args.decisions).resolve(),
             acard_dirs=ac_dirs,
             allow_unverified_spec=args.allow_unverified_spec,
+            manifest_path=manifest_p,
+            pdd_dirs=pdd_dirs,
         )
 
-    run_redteam_audit(excel_p, args.sheet)
+    run_redteam_audit(excel_p, args.sheet, manifest_path=manifest_p, pdd_dirs=pdd_dirs)
 
     if not args.no_html:
         html_out = Path(args.html_out).resolve() if args.html_out else excel_p.with_name(f"{excel_p.stem}_直检看板.html")

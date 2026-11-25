@@ -31,11 +31,24 @@ FRESH_EXCLUDE_RE = re.compile(
     r"刀|汤圆|饺|包子|粥|贴|暖宝宝|指甲油|拖鞋|胸贴|起泡胶|刨丝器|菜板|盘子|牙签|竹签|土豆条|蛋花汤|果汁|奶茶|蒜瓣"
 )
 COMBO_RE = re.compile(r"调酒组合|礼盒组合|套装组合|整箱组合|多品组合|\+.*组合")
+PDD_CATEGORY_RE = re.compile(
+    r"食品|零食|饮品|饮料|速食|罐头|粮油|调味|干货|冲调|乳饮|酒水|茶叶|咖啡|"
+    r"个人洗护|个护|洗护|护肤|纸品|家清|母婴用品.*尿裤|尿不湿|宠物食品|猫粮|狗粮|猫罐头"
+)
+GENERAL_MERCH_CATEGORY_RE = re.compile(
+    r"家居日用|家纺布艺|厨具餐具|水具|五金|服饰|鞋靴|箱包|美妆工具|化妆刷|玩具|文具|办公|运动户外|汽车用品|智能穿戴配件|数码配件|手机配件"
+)
+NON_FMCG_OBJECT_RE = re.compile(
+    r"收纳盒|收纳篮|整理箱|玻璃杯|水杯|保温杯|果茶杯|奶茶杯|果汁杯|咖啡杯|条绒浴巾|大浴巾|化妆刷|鼻影刷|眼影刷|开瓶器|启瓶器|开酒器|修眉刀|刮眉刀|防晒口罩|立体.*口罩|一次性.*口罩|医用口罩|防晒衣|冰袖|遮阳帽|遮阳伞|充电器|数据线|保护壳|手机壳"
+)
 PDD_PRIORITY_RE = re.compile(
-    r"零食|饮料|牛奶|纯牛奶|酸奶|鲜奶|矿泉水|饮用水|气泡水|汽水|可乐|雪碧|啤酒|鸡尾酒|咖啡|奶茶|茶饮料|"
-    r"方便面|泡面|拌面|酸辣粉|螺蛳粉|米线|火鸡面|薯片|饼干|面包|吐司|蛋糕|辣条|凤爪|鸡爪|鸭脖|卤味|牛肉干|鸡胸肉|"
-    r"花生|瓜子|坚果|葡萄干|山楂|红枣|蜜饯|糖果|巧克力|口香糖|槟榔|调料|调味料|调味酱|蘸料|底料|酱油|陈醋|香醋|蚝油|花生酱|芝麻酱|麻酱|辣椒酱|香米|食用油|猪油|"
-    r"洗发水|护发素|沐浴露|洗面奶|洁面|卸妆|面霜|乳液|防晒|定妆喷雾|修容|粉底|口红|牙膏|卫生巾|护垫|纸尿裤|湿巾|洗脸巾|抽纸|卷纸|洗衣液|消毒液|洗液|"
+    r"零食|饮料|牛奶|纯牛奶|酸奶|鲜奶|矿泉水|饮用水|气泡水|汽水|可乐|雪碧|啤酒|鸡尾酒|清酒|红酒|白酒|咖啡|奶茶|茶饮料|茶叶|茶包|绿茶|红茶|乌龙茶|花茶|袋泡茶|凉茶|果茶|厚椰乳|椰浆|八宝粥|麦片|燕麦|豆浆|藕粉|芝麻糊|"
+    r"方便面|泡面|拌面|板面|干脆面|酸辣粉|螺蛳粉|米线|火鸡面|薯片|薯条|锅巴|曲奇|饼干|面包|吐司|蛋糕|蛋挞皮|辣条|素肉|素食|豆干|魔芋|鱼豆腐|海苔|紫菜|榨菜|凤爪|鸡爪|鸭脖|鸭舌|鸭肝|鸭掌|鸭翅|卤味|牛肉干|鸡胸肉|鸡肉肠|火腿肠|猪油渣|活珠子|皮蛋|肉松|"
+    r"花生|瓜子|坚果|葡萄干|山楂|红枣|蜜饯|话梅|西梅|糖果|巧克力|果冻|口香糖|槟榔|雪花酥|猫耳朵|"
+    r"调料|调味料|调味酱|蘸料|底料|酱油|生抽|老抽|陈醋|香醋|蚝油|番茄酱|番茄沙司|花生酱|芝麻酱|麻酱|辣椒酱|腐乳|大米|香米|挂面|白砂糖|麦芽糖|黄油|奶酪|芝士|食用油|猪油|熟白芝麻|"
+    r"洗发水|洗发露|护发素|沐浴露|沐浴|洗面奶|洁面|卸妆|面霜|乳液|防晒霜|防晒露|防晒乳|防晒喷雾|定妆喷雾|粉底|口红|唇膏|精华|面膜|护手霜|身体乳|搓泥宝|发蜡|"
+    r"牙膏|牙刷|漱口水|卫生巾|护垫|纸尿裤|拉拉裤|尿不湿|湿巾|洗脸巾|抽纸|卷纸|洗衣液|洗衣粉|洗衣凝珠|柔顺剂|肥皂|香皂|洗洁精|洁厕|消毒液|洗液|"
+    r"猫粮|狗粮|猫罐头|猫条|宠物零食|"
     r"电饭煲|养生壶|电煮锅|电磁炉|吹风机|煎药壶|路由器|随身wifi|体脂秤"
 )
 DONE_STATUSES = {"已核可采购", "已核同款(毛利<50%)", "已核同款(售价为0)", "匹配", "已翻新1", "组合商品", "生鲜蔬果本地采购"}
@@ -57,15 +70,49 @@ def parse_rows_spec(spec: Optional[str], max_row: int) -> Optional[Set[int]]:
     return out
 
 
-def classify_route(name: str, spec: str) -> str:
+def classify_route(name: str, spec: str, category: str = "") -> str:
     txt = f"{name} {spec}"
     if COMBO_RE.search(txt):
         return "combo"
     if FRESH_RE.search(txt) and not FRESH_EXCLUDE_RE.search(txt):
         return "fresh"
+    # True consumable paper/diaper/hygiene items always stay PDD-first
+    if re.search(r"洗脸巾|湿巾|抽纸|卷纸|卫生巾|纸尿裤|拉拉裤|尿不湿", txt):
+        return "pdd"
+    if category:
+        if PDD_CATEGORY_RE.search(category) and not GENERAL_MERCH_CATEGORY_RE.search(category):
+            return "pdd"
+        if GENERAL_MERCH_CATEGORY_RE.search(category):
+            return "1688"
+    if NON_FMCG_OBJECT_RE.search(txt):
+        return "1688"
     if PDD_PRIORITY_RE.search(txt):
         return "pdd"
     return "1688"
+
+
+def build_platform_policy(route: str) -> Dict[str, Any]:
+    """Return enforceable Round-1 platform lock contract for manifest.json (pddauto v3.4)."""
+    if route == "pdd":
+        return {
+            "platform_policy": "pdd_first_lock",
+            "round1_platform": "pdd",
+            "fallback_platforms": ["1688"],
+            "fallback_conditions": ["pdd_no_match", "pdd_low_margin"],
+        }
+    if route == "1688":
+        return {
+            "platform_policy": "1688_first",
+            "round1_platform": "1688",
+            "fallback_platforms": ["pdd"],
+            "fallback_conditions": [],
+        }
+    return {
+        "platform_policy": "no_sourcing",
+        "round1_platform": "",
+        "fallback_platforms": [],
+        "fallback_conditions": [],
+    }
 
 
 def download_store_img(row: int, url: str, store_dir: Path) -> str:
@@ -133,6 +180,7 @@ def main() -> int:
         status = str(ws.cell(r, 14).value or "").strip()
         if args.only_unmatched and status in DONE_STATUSES:
             continue
+        route = classify_route(name, spec)
         rows_data.append({
             "row": r,
             "spuid": spuid,
@@ -143,7 +191,8 @@ def main() -> int:
             "store_img_url": img_url,
             "store_img_local": "",
             "status": status,
-            "route": classify_route(name, spec),
+            "route": route,
+            **build_platform_policy(route),
         })
 
     def _dl(item: Dict[str, Any]) -> None:
@@ -153,6 +202,7 @@ def main() -> int:
         list(pool.map(_dl, rows_data))
 
     manifest = {
+        "policy_version": "v3.4",
         "excel": str(excel_p),
         "sheet": ws.title,
         "workdir": str(workdir),
@@ -161,6 +211,7 @@ def main() -> int:
             k: sum(1 for x in rows_data if x["route"] == k)
             for k in ("1688", "pdd", "combo", "fresh")
         },
+        "pdd_first_locked_count": sum(1 for x in rows_data if x.get("platform_policy") == "pdd_first_lock"),
         "rows": rows_data,
     }
     out_p = workdir / "manifest.json"
@@ -168,7 +219,7 @@ def main() -> int:
 
     missing_img = sum(1 for x in rows_data if not x["store_img_local"])
     print(f"OK: Prepared {len(rows_data)} rows -> {out_p}")
-    print(f"    Routes: {manifest['routes']} | Missing store imgs: {missing_img}")
+    print(f"    Routes: {manifest['routes']} | PDD-First Locked: {manifest['pdd_first_locked_count']} | Missing store imgs: {missing_img}")
     return 0
 
 
