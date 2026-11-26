@@ -1,10 +1,10 @@
 # 1688 & 拼多多多模态采购寻源与双模式交付引擎 (pddauto)
 
-[![Version](https://img.shields.io/badge/version-3.4.0-blue.svg)](VERSION)
-[![Modes](https://img.shields.io/badge/modes-Excel%2015--Col%20%7C%20Yuandian%20SaaS%2012--Col-brightgreen.svg)](#一双模式全流程闭环架构)
+[![Version](https://img.shields.io/badge/version-3.5.0-blue.svg)](VERSION)
+[![Modes](https://img.shields.io/badge/modes-Excel%2017--Col%20%7C%20Yuandian%20SaaS%2012--Col-brightgreen.svg)](#一双模式全流程闭环架构)
 [![Channels](https://img.shields.io/badge/channels-1688%20Silent%20CDP%20%7C%20QNH%20Enterprise%20API%20%7C%20PDD%20Android%20ADB-orange.svg)](#一双模式全流程闭环架构)
 
-本仓库专用于即时零售闪电仓与多渠道货盘的 **1688 源头工厂 + 拼多多真机原生 App 高标准自动化采购寻源、食品/快消品第一轮拼多多物理硬锁、多模态视觉拼图裁判、零人工备注逐字节规格强校验与双模式安全回填 Skill (`pddauto v3.4.0`)**。
+本仓库专用于即时零售闪电仓与多渠道货盘的 **1688 源头工厂 + 拼多多真机原生 App 高标准自动化采购寻源、食品/快消品第一轮拼多多物理硬锁、多模态视觉拼图裁判、零人工备注逐字节规格强校验、1688 起购数/下单倍数实库核验与双模式安全回填 Skill (`pddauto v3.5.0`)**。
 
 ---
 
@@ -15,17 +15,17 @@
 ```mermaid
 flowchart TD
     Mode{"任务模式分流"}
-    Mode -->|"模式 A: 本地 Excel 15列"| S1A["Step 1A: step1_prepare.py<br>• 锁 SKUID + 下门店主图 + 双平台路由"]
+    Mode -->|"模式 A: 本地 Excel 17列"| S1A["Step 1A: step1_prepare.py<br>• 锁 SKUID + 下门店主图 + 双平台路由"]
     Mode -->|"模式 B: 原点闪购管理后台 12列"| S1B["Step 1B: step1_yuandian_pull.py<br>• 9222 CDP 拉取队列/当前订单 + 在线实时 /rules<br>• 产出同构 manifest.json + store/{row}.jpg"]
 
     S1A --> S2
     S1B --> S2
 
-    S2["Step 2: 双平台静默/真机并发采集<br>• 通道 A (1688): step2_1688_search.py (100% 后台静默不抢鼠标、保护业务标签页)<br>  + 有牵牛花账号走 qnh_1688_validator.py 企业批量接口 (0 滑块)<br>• 通道 B (拼多多): step2_pdd_search.py (Android 真机防横幅词搜 / 相册单件原子流搜图 / SKU 点选)"]
+    S2["Step 2: 双平台静默/真机并发采集<br>• 通道 A (1688): step2_1688_search.py (100% 后台静默不抢鼠标、保护业务标签页、图搜/词搜节流冷却)<br>  + 有牵牛花账号走 qnh_1688_validator.py 企业批量接口 (0 滑块取真规格/起购数/下单倍数)<br>• 通道 B (拼多多): step2_pdd_search.py (Android 真机防横幅词搜 / 相册单件原子流搜图 / SKU 点选)"]
 
-    S2 --> S3["Step 3: 强制多模态图文核验裁判<br>• step3_render_judge_sheet.py 生成对照拼图 + 完整 SKU/券/属性证据<br>• 多模态大模型逐行看图核验并产出 visual_verified=true 的 decisions.json"]
+    S2 --> S3["Step 3: 强制多模态图文核验裁判<br>• step3_render_judge_sheet.py 生成对照拼图 + 完整 SKU/起购数/倍数/券/属性证据<br>• 多模态大模型逐行看图核验并产出 visual_verified=true 的 decisions.json"]
 
-    S3 -->|"模式 A: 本地 Excel"| S4A["Step 4A: step4_apply_and_export.py<br>• 零备注逐字节强校验 + 15 列原子回填 + 红队自检<br>• 同步导出单文件离线双向直检 HTML 看板"]
+    S3 -->|"模式 A: 本地 Excel"| S4A["Step 4A: step4_apply_and_export.py<br>• 零备注逐字节强校验 + 17 列原子回填 (含 1688 P列起购数/Q列下单倍数) + 红队自检<br>• 同步导出单文件离线双向直检 HTML 看板"]
     S3 -->|"模式 B: 原点闪购后台"| S4B["Step 4B: step4_yuandian_push.py<br>• 零备注逐字节强校验 + 自动同步 channel(1688/pdd)<br>• 校验服务端四项 red_team_checks 全绿<br>• 安全停在「待回传」，严禁自动扣款结算"]
 ```
 
@@ -36,10 +36,10 @@ flowchart TD
 1. **严禁盲填，必过视觉拼图裁判**：所有命中项必须经 `step3_render_judge_sheet.py` 拼图 + 多模态强模型审图并标 `"visual_verified": true`。
 2. **100% 后台静默，绝不抢鼠标与业务标签页**：`cdp_1688.py` 仅使用静默 DOM / `Page.navigate` / `Target.createTarget(..., background=True)`，仅复用空白页或已打开的 1688 标签页，绝不劫持任何现有业务或用户标签页。
 3. **严禁绕过任何验证码/滑块/风控**：遇拦截立即退出码 `9` 停止并回报人工。
-4. **严格核价口径**：拼多多计入常规店铺券/平台券/百亿补贴/大促直降（不计个人新客/赔付红包），排除临期与售罄；1688 核对阶梯价、起订量、分摊运费及商品属性。
+4. **严格核价口径与 1688 起购/倍数实库对齐（v3.5 新增）**：拼多多计入常规店铺券/平台券/百亿补贴/大促直降（不计个人新客/赔付红包），排除临期与售罄；1688 核对阶梯价、起订量、分摊运费及商品属性，**并在模式 A 标准 17 列 Excel 中强制回填 P 列 `起购数`（`minOrderQuantity`）与 Q 列 `下单倍数`（`batchNumber`，不限填 `1`）**（拼多多/组合/生鲜行保持留空）。
 5. **供货规格零人工备注、逐字符原样匹配**：严禁添加 `(包邮)`、`起批`、`券后` 等人工备注，双层规格严格用英文分号加空格 `; ` 连接；代码层内置 `validate_verbatim_spec` 硬拦截。
 6. **双模式原子回填 + 红队自检 + 结算安全锁**：
-   - Excel 模式：校验 `SKUID` 锁行、`=ROUND(L{r}/K{r},2)` 公式、ZIP 完整性与红队自检；
+   - Excel 模式：校验 `SKUID` 锁行、`=ROUND(L{r}/K{r},2)` 公式、1688 `moq`/`order_multiple` 硬闸门、ZIP 完整性与红队自检（`miss_moq_1688=0` / `stale_moq_pdd=0`），有牵牛花账号时通过 `qnh_1688_validator.py --mode verify-excel` 100% 实库复核规格、在售库存与起购数/下单倍数；
    - 原点闪购模式：校验 `SKUID` 锁行、自动同步 `channel`（`1688`/`pdd`）、核验服务端四项 `red_team_checks` 全绿，且**物理不实现 `/deliver` 与 `/cancel`**，确保绝不误触发扣款结算。
 7. **交付物完整同步**：Excel 模式必同时交付 `.xlsx` 与离线直检 HTML 看板；原点闪购模式必落盘 `yuandian_push_report.json` 并静默刷新后台页供人工点击结算。
 8. **食品与快消品「第一轮锁死拼多多」物理硬锁（v3.4 新增）**：所有食品吃喝与快消日化商品在 Step 1 自动标记 `platform_policy = "pdd_first_lock"`，**第一轮必须先完成拼多多真机实搜**；`step2_1688_search.py`、`step4_apply_and_export.py`、`step4_yuandian_push.py` 均内置物理阻断（无 CLI 绕过开关），仅当磁盘存在非阻断拼多多实搜铁证（`pdd_*/R{row}.json`）且显式声明 `pdd_fallback_reason` 为 `"pdd_no_match"` 或 `"pdd_low_margin"`（附带 `pdd_best_unit_price` 时强制反验毛利 `< 50%`）时，才允许二轮转 1688 补找与入表。
@@ -50,14 +50,14 @@ flowchart TD
 
 ```text
 pddauto/
-├── SKILL.md                                  # 主执行规程与八大强制闸门 (v3.4.0)
+├── SKILL.md                                  # 主执行规程与八大强制闸门 (v3.5.0)
 ├── README.md                                 # 仓库导览与双模式快速上手
-├── VERSION                                   # 版本号 (3.4.0)
+├── VERSION                                   # 版本号 (3.5.0)
 ├── quick_validate.py                         # 全量 Python/Node 语法与单元测试一键自检
 ├── agents/
 │   └── openai.yaml                           # Agent 界面展示与默认提示词
 ├── references/
-│   ├── pricing-and-matching-contract.md      # 15 列架构、核价口径、匹配容差与状态枚举
+│   ├── pricing-and-matching-contract.md      # 17 列架构（含 1688 起购数/下单倍数）、核价口径与状态枚举
 │   ├── yuandian-saas-adapter.md              # 原点闪购管理后台 12 列适配、动态规则与结算安全锁
 │   ├── anti-risk-and-device-sop.md           # 1688 静默防抢鼠标、防滑块节奏与真机 ADB 规范
 │   └── tool-io-schemas.md                    # 全部脚本 CLI 参数与 JSON 输入输出契约
@@ -75,7 +75,7 @@ pddauto/
     ├── step3_render_judge_sheet.py           # Step 3: 强制多模态审图拼图与证据文本生成
     ├── step4_apply_and_export.py             # Step 4A (Excel): 原子写回 + 红队自检 + 同步出 HTML
     ├── step4_yuandian_push.py                # Step 4B (原点后台): 零备注强校验回填 + 渠道同步 + 红队验证
-    ├── qnh_1688_validator.py                 # 牵牛花企业 1688 批量取真规格/价/库存与导入前预校验
+    ├── qnh_1688_validator.py                 # 牵牛花企业 1688 批量取真规格/价/库存/起购数/下单倍数与实库预校验
     ├── qnh_spu_extractor.mjs                 # 牵牛花后台 SPU 主图与指导价高速抓取器
     ├── export_visual_audit_html.py           # 单文件离线双向直检 HTML 看板导出器
     ├── audit_server.mjs                      # 可选本机 8899 看板直连写盘服务
@@ -91,12 +91,14 @@ pddauto/
 
 ## 四、快速上手
 
-### 模式 A：本地 15 列 Excel 寻源与直检看板
+### 模式 A：本地 17 列 Excel 寻源与直检看板（15 列原表自动升列）
 ```bash
 python3 scripts/step1_prepare.py --excel /abs/path/to/target.xlsx --workdir /abs/path/to/work --only-unmatched
 # 运行 step2_1688_search.py / step2_pdd_search.py / qnh_1688_validator.py 采集候选
-# 运行 step3_render_judge_sheet.py 生成拼图 -> 多模态模型输出 decisions.json
+# 运行 step3_render_judge_sheet.py 生成拼图 -> 多模态模型输出 decisions.json（1688 行含 moq 与 order_multiple）
 python3 scripts/step4_apply_and_export.py --excel /abs/path/to/target.xlsx --decisions /abs/path/to/work/decisions.json
+# 有牵牛花账号时交付前跑 100% 实库复核（含规格、库存与 P/Q 列起购数/下单倍数）：
+python3 scripts/qnh_1688_validator.py --mode verify-excel --excel /abs/path/to/target.xlsx --sheet Sheet1
 ```
 
 ### 模式 B：原点闪购管理后台 (`saas.fuliops.cn/procurement-sourcing`) 实时订单寻源

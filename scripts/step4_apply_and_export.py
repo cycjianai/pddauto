@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Step 4: Atomic 15-Column Excel Commit + Mandatory Red-Team Integrity Audit + Automatic Synchronized HTML Dashboard Export (pddauto v3.0)
+Step 4: Atomic 17-Column Excel Commit (Cols A..O + 1688 Col P 起购数 & Col Q 下单倍数)
++ Mandatory Red-Team Integrity Audit + Automatic Synchronized HTML Dashboard Export (pddauto v3.5)
 
 Usage:
   # Apply verified multimodal judge decisions + audit + auto-generate synchronized HTML dashboard:
@@ -341,6 +342,10 @@ def apply_decisions(
 
     wb = openpyxl.load_workbook(excel_path, data_only=False)
     ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
+    p1_hdr = str(ws.cell(1, 16).value or "").strip()
+    q1_hdr = str(ws.cell(1, 17).value or "").strip()
+    # Standard v3.5 17-column mode: active whenever Col P/Q are blank (upgrade 15->17 cols) or labeled 起购数/下单倍数
+    has_moq_cols = (p1_hdr in ("", "起购数") and q1_hdr in ("", "下单倍数"))
     updated = 0
 
     for it in items:
@@ -360,7 +365,8 @@ def apply_decisions(
             ws.cell(r, 14).value = st
             if st in ("组合商品", "生鲜蔬果本地采购"):
                 ws.cell(r, 8).value = st
-                for col in (9, 10, 11, 12, 13, 15):
+                cols_to_clear = (9, 10, 11, 12, 13, 15, 16, 17) if has_moq_cols else (9, 10, 11, 12, 13, 15)
+                for col in cols_to_clear:
                     ws.cell(r, col).value = None
             updated += 1
             continue
@@ -420,7 +426,24 @@ def apply_decisions(
         if not is_1688 and "alicdn.com" in img_url:
             img_url = ""
 
-        # Write strictly to H..O (Cols 8..15); A..G are strictly read-only!
+        # Validate 1688 MOQ (Col P 起购数) & Order Multiple (Col Q 下单倍数) (MANDATORY in v3.5 for all 1688 rows)
+        moq_val: Optional[int] = None
+        mult_val: Optional[int] = None
+        if is_1688 and (has_moq_cols or it.get("moq") is not None or it.get("order_multiple") is not None):
+            if it.get("moq") in (None, "") or it.get("order_multiple") in (None, ""):
+                raise RuntimeError(
+                    f"Row {r} REJECTED (1688 MOQ/Multiple Gate): 1688 row MUST include positive integer "
+                    f"'moq' (起购数, QNH minOrderQuantity) and 'order_multiple' (下单倍数, QNH batchNumber)!"
+                )
+            try:
+                moq_val = int(it["moq"])
+                mult_val = int(it["order_multiple"])
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(f"Row {r} invalid non-integer moq/order_multiple: {exc}") from exc
+            if moq_val < 1 or mult_val < 1:
+                raise RuntimeError(f"Row {r} invalid moq={moq_val} or order_multiple={mult_val} (must be >= 1)")
+
+        # Write strictly to H..Q (Cols 8..17); A..G are strictly read-only!
         ws.cell(r, 8).value = source
         ws.cell(r, 9).value = spec
         ws.cell(r, 10).value = checkout
@@ -429,6 +452,9 @@ def apply_decisions(
         ws.cell(r, 13).value = f"=ROUND(L{r}/K{r},2)"
         ws.cell(r, 14).value = status
         ws.cell(r, 15).value = img_url or None
+        if has_moq_cols or moq_val is not None:
+            ws.cell(r, 16).value = moq_val if is_1688 else None
+            ws.cell(r, 17).value = mult_val if is_1688 else None
 
         # Clean any legacy 1688 CDN URL accidentally sitting in Col C (分配人)
         c3 = ws.cell(r, 3).value
@@ -437,9 +463,14 @@ def apply_decisions(
 
         updated += 1
 
-    # Ensure Col O header is properly labeled if blank
+    # Ensure Col O / P / Q headers are properly labeled in standard 17-column layout
     if not ws.cell(1, 15).value:
         ws.cell(1, 15).value = "供货商主图"
+    if has_moq_cols:
+        if not ws.cell(1, 16).value:
+            ws.cell(1, 16).value = "起购数"
+        if not ws.cell(1, 17).value:
+            ws.cell(1, 17).value = "下单倍数"
 
     tmp = excel_path.with_suffix(".pddauto_tmp.xlsx")
     wb.save(tmp)
@@ -476,6 +507,10 @@ def run_redteam_audit(
 
     wb = openpyxl.load_workbook(excel_path, data_only=False)
     ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
+    has_moq_cols = (
+        str(ws.cell(1, 16).value or "").strip() == "起购数"
+        and str(ws.cell(1, 17).value or "").strip() == "下单倍数"
+    )
 
     cnt = Counter()
     plat = Counter()
@@ -483,6 +518,8 @@ def run_redteam_audit(
     stale_c_matched = 0
     stale_o_pdd = 0
     miss_o_1688 = 0
+    miss_moq_1688 = 0
+    stale_moq_pdd = 0
     bad_spec_annotations = []
     tiny_cost = []
     single_pack_low = []
@@ -514,6 +551,15 @@ def run_redteam_audit(
                 plat["1688"] += 1
                 if not o_val.startswith("http"):
                     miss_o_1688 += 1
+                if has_moq_cols:
+                    p_val = ws.cell(r, 16).value
+                    q_val = ws.cell(r, 17).value
+                    try:
+                        bad_pq = p_val in (None, "") or q_val in (None, "") or int(p_val) < 1 or int(q_val) < 1
+                    except (TypeError, ValueError):
+                        bad_pq = True
+                    if bad_pq:
+                        miss_moq_1688 += 1
                 if is_row_pdd_first_locked(r, skuid, name, store_spec, manifest_by_skuid, manifest_by_row):
                     pdd_first_1688_total += 1
                     if evidence_pdd_dirs and not has_pdd_search_evidence(r, evidence_pdd_dirs):
@@ -522,6 +568,11 @@ def run_redteam_audit(
                 plat["拼多多"] += 1
                 if "alicdn.com" in o_val:
                     stale_o_pdd += 1
+                if has_moq_cols:
+                    p_val = ws.cell(r, 16).value
+                    q_val = ws.cell(r, 17).value
+                    if p_val not in (None, "") or q_val not in (None, ""):
+                        stale_moq_pdd += 1
             else:
                 plat["其他"] += 1
 
@@ -554,6 +605,8 @@ def run_redteam_audit(
         "stale_c_matched": stale_c_matched,
         "stale_o_pdd": stale_o_pdd,
         "miss_o_1688": miss_o_1688,
+        "miss_moq_1688": miss_moq_1688,
+        "stale_moq_pdd": stale_moq_pdd,
         "bad_spec_annotations": bad_spec_annotations,
         "pdd_first_1688_total": pdd_first_1688_total,
         "pdd_first_unverified_1688": pdd_first_unverified_1688,
@@ -565,8 +618,8 @@ def run_redteam_audit(
     print(f"  ZIP: OK | Status: {report['status']} | Platforms: {report['platforms']}")
     print(
         f"  bad_formula={bad_formula} | stale_c_matched={stale_c_matched} | "
-        f"stale_o_pdd={stale_o_pdd} | miss_o_1688={miss_o_1688} | "
-        f"bad_spec_annotations={len(bad_spec_annotations)} | "
+        f"stale_o_pdd={stale_o_pdd} | miss_o_1688={miss_o_1688} | miss_moq_1688={miss_moq_1688} | "
+        f"stale_moq_pdd={stale_moq_pdd} | bad_spec_annotations={len(bad_spec_annotations)} | "
         f"pdd_first_1688={pdd_first_1688_total} (unverified_no_pdd_evidence={len(pdd_first_unverified_1688)})"
     )
     for x in pdd_first_unverified_1688[:10]:
@@ -587,7 +640,7 @@ def run_redteam_audit(
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Step 4: Atomic Excel commit + Red-Team Audit + Synchronized HTML Export")
-    ap.add_argument("--excel", required=True, help="Target 15-column Excel workbook path")
+    ap.add_argument("--excel", required=True, help="Target 15/17-column Excel workbook path")
     ap.add_argument("--sheet", default="门店商品", help="Worksheet name (default 门店商品)")
     ap.add_argument("--decisions", default=None, help="Path to visually-verified decisions.json")
     ap.add_argument("--manifest", default=None, help="Optional path to manifest.json (auto-discovered next to decisions.json if omitted)")

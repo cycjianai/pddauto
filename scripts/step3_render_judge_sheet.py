@@ -71,6 +71,8 @@ def collect_1688_candidates(workdir: Path, r: int, thumb_cache: Path) -> List[Di
             "img_url": img_u,
             "title": d.get("goods") or d.get("title") or "",
             "main": str(d.get("main") or "").replace("\n", " "),
+            "moq": d.get("moq"),
+            "order_multiple": d.get("order_multiple"),
             "ship": d.get("ship") or "",
             "sales": d.get("sales_lbl") or "",
             "attrs": str(d.get("attrs") or "").replace("\n", " | ")[:350],
@@ -161,7 +163,8 @@ def render_sheet(
                 canvas.paste(im, (x_base, y0 + 58))
             draw.text((x_base, y0 + 298), f"c{ci} {c['label'][:30]}", fill=(185, 28, 28), font=font_sm)
             if platform == "1688":
-                lines.append(f"  [c{ci}] oid={c['id']} | title={c['title'][:60]} | sales={c['sales']} | main={c['main'][:90]}")
+                moq_s = f" | moq={c['moq']} mult={c['order_multiple']}" if c.get("moq") or c.get("order_multiple") else ""
+                lines.append(f"  [c{ci}] oid={c['id']} | title={c['title'][:60]} | sales={c['sales']}{moq_s} | main={c['main'][:90]}")
                 lines.append(f"       ship={c['ship']} | img_url={c['img_url']}")
                 lines.append(f"       attrs={c['attrs']}")
                 if c.get("qnh_specs"):
@@ -169,8 +172,11 @@ def render_sheet(
                     for qs in c["qnh_specs"][:25]:
                         sp_raw = qs.get("spec", "")
                         sp_warn = " [含连续空格!原样保留]" if "  " in sp_raw else ""
+                        q_moq = qs.get("moq") or c.get("moq")
+                        q_mult = qs.get("order_multiple") or c.get("order_multiple")
+                        q_extra = f" | 起购={q_moq} | 倍数={q_mult}" if (q_moq or q_mult) else ""
                         lines.append(
-                            f"         SPEC={sp_raw!r} | ¥{qs.get('price')} | 库存={qs.get('stock')}{sp_warn}"
+                            f"         SPEC={sp_raw!r} | ¥{qs.get('price')} | 库存={qs.get('stock')}{q_extra}{sp_warn}"
                         )
                 else:
                     if c["options"]:

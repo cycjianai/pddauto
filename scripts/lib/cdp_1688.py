@@ -80,22 +80,27 @@ OFFER_RENDER_JS = r"""(() => {
     || /punish|captcha|login\.1688|login\.taobao/.test(location.href);
   const unavailable = !ready && /已下架|已过期|商品不存在|该商品不存在|无法找到|无法查看|宝贝不存在|暂不支持/.test(body.slice(0, 3000));
 
-  // Extract raw 1688 skuModel (exact skuProps + skuInfoMap preserving multi-spaces, 3-tier keys, industrial keys)
+  // Extract raw 1688 skuModel + orderParamModel (MOQ & order multiple)
   let skuModel = null;
   let tempModel = null;
+  let orderParamModel = null;
   try {
     const dj = window.context?.result?.data?.Root?.fields?.dataJson;
     if (dj) {
       if (dj.skuModel) skuModel = dj.skuModel;
       if (dj.tempModel) tempModel = dj.tempModel;
+      if (dj.orderParamModel) orderParamModel = dj.orderParamModel;
     }
   } catch (err) {}
-  if (!skuModel) {
+  if (!skuModel || !orderParamModel) {
     const seen = new Set();
     const walk = (obj, depth) => {
-      if (!obj || typeof obj !== 'object' || depth > 12 || seen.has(obj) || skuModel) return;
+      if (!obj || typeof obj !== 'object' || depth > 12 || seen.has(obj)) return;
       seen.add(obj);
-      if (obj.skuInfoMap && typeof obj.skuInfoMap === 'object') { skuModel = obj; return; }
+      if (!skuModel && obj.skuInfoMap && typeof obj.skuInfoMap === 'object') skuModel = obj;
+      if (!orderParamModel && (obj.orderParam || obj.beginAmount !== undefined || obj.batchNumber !== undefined)) {
+        if (obj.orderParam && typeof obj.orderParam === 'object') orderParamModel = obj;
+      }
       for (const k of Object.keys(obj)) {
         if (k === 'window' || k === 'self' || k === 'parent' || k === 'top' || k === 'document') continue;
         try { walk(obj[k], depth + 1); } catch (err) {}
@@ -105,6 +110,24 @@ OFFER_RENDER_JS = r"""(() => {
     if (!skuModel) walk(window.__INIT_DATA, 0);
     if (!skuModel) walk(window.__DETAIL_DATA, 0);
   }
+
+  const posInt = v => {
+    const n = parseInt(String(v ?? '').trim(), 10);
+    return Number.isFinite(n) && n >= 1 ? n : null;
+  };
+  const skuParam = orderParamModel?.orderParam?.skuParam || {};
+  const globalMoq =
+    posInt(orderParamModel?.orderParam?.beginAmount) ||
+    posInt(skuParam.beginAmount) ||
+    posInt(skuModel?.skuPriceScale?.split?.('-')?.[0]) ||
+    posInt((text('#mainPrice').match(/(\d+)\s*[件个支包盒袋瓶桶套组条双卷米块张把副罐箱]\s*起批/) || [])[1]) ||
+    posInt((body.slice(0, 2600).match(/(\d+)\s*[件个支包盒袋瓶桶套组条双卷米块张把副罐箱]\s*起批/) || [])[1]) ||
+    1;
+  const globalOrderMultiple =
+    posInt(orderParamModel?.orderParam?.batchNumber) ||
+    posInt(skuParam.batchNumber) ||
+    posInt((body.slice(0, 3500).match(/(?:按|需拍|请拍)\s*(\d+)\s*的倍数/) || [])[1]) ||
+    1;
 
   let offerTitle = (tempModel && tempModel.offerTitle) || '';
   if (!offerTitle) {
@@ -148,11 +171,22 @@ OFFER_RENDER_JS = r"""(() => {
         stock: v.canBookCount ?? null,
         skuId: v.skuId ?? null,
         specId: v.specId ?? null,
+        moq: posInt(v.minOrderQuantity) || posInt(v.beginAmount) || globalMoq,
+        order_multiple: posInt(v.batchNumber) || globalOrderMultiple,
       });
     }
   } else if (ready && !unavailable && offerTitle) {
     // 0-SKU single item: Qianniuhua matches exact 1688 offerTitle
-    qnhSpecs.push({spec: offerTitle, price: null, stock: null, skuId: null, specId: null, zeroSkuTitle: true});
+    qnhSpecs.push({
+      spec: offerTitle,
+      price: null,
+      stock: null,
+      skuId: null,
+      specId: null,
+      moq: globalMoq,
+      order_multiple: globalOrderMultiple,
+      zeroSkuTitle: true,
+    });
   }
 
   return {
@@ -164,6 +198,8 @@ OFFER_RENDER_JS = r"""(() => {
     challenge,
     unavailable,
     main: text('#mainPrice'),
+    moq: globalMoq,
+    order_multiple: globalOrderMultiple,
     ship,
     shop: text('#shopNavigation').slice(0, 500),
     attrs: text('#productAttributes').slice(0, 4000),

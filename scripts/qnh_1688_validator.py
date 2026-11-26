@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Qianniuhua Enterprise 1688 API Bridge & Pre-Import Verifier (pddauto v3.2)
+Qianniuhua Enterprise 1688 API Bridge & Pre-Import Verifier (pddauto v3.5)
 
 Uses the user's already-logged-in Qianniuhua Chrome tab (CDP port 9222..9229) to call:
   - POST /qnh-gw2/scm/online-procure/batch-query-channel-goods (25~50 1688 offers/call, ~65ms/offer, ZERO 1688 CAPTCHA!)
@@ -8,10 +8,11 @@ Uses the user's already-logged-in Qianniuhua Chrome tab (CDP port 9222..9229) to
 
 Capabilities:
   1. --mode fetch-offers : Batch-fetch exact Qianniuhua-canonical 1688 SKU lists (channelSpecName, specPrice, stock,
-                           minOrderQuantity, mixNumber, unit, picUrlList, status) for arbitrary 1688 offerIds.
-  2. --mode verify-excel : Pre-validate every 1688 row in a 15-col sourcing Excel workbook against Qianniuhua's live
+                           minOrderQuantity [Col P 起购数], batchNumber [Col Q 下单倍数], mixNumber, unit, picUrlList, status)
+                           for arbitrary 1688 offerIds.
+  2. --mode verify-excel : Pre-validate every 1688 row in a 15/17-col sourcing Excel workbook against Qianniuhua's live
                            1688 API BEFORE importing into Qianniuhua (catches spec mismatches, hidden multi-spaces,
-                           3-tier keys, delisted offers, and zero-stock SKUs).
+                           3-tier keys, delisted offers, zero-stock SKUs, and Col P 起购数 / Col Q 下单倍数 mismatches).
 """
 
 from __future__ import annotations
@@ -163,7 +164,7 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=None, help="Chrome CDP port hosting Qianniuhua (default auto 9222..9229)")
     ap.add_argument("--oids-file", default=None, help="Newline-separated 1688 offerIds (for fetch-offers)")
     ap.add_argument("--out-json", default=None, help="Output JSON cache path")
-    ap.add_argument("--excel", default=None, help="15-column sourcing workbook (for verify-excel)")
+    ap.add_argument("--excel", default=None, help="15/17-column sourcing workbook (for verify-excel)")
     ap.add_argument("--sheet", default="Sheet1", help="Worksheet name")
     ap.add_argument("--batch-size", type=int, default=25, help="Offers per batch-query call (default 25, max tested 50)")
     args = ap.parse_args()
@@ -182,6 +183,10 @@ def main() -> int:
         raise SystemExit("verify-excel requires --excel")
     wb = openpyxl.load_workbook(args.excel, data_only=True)
     ws = wb[args.sheet] if args.sheet in wb.sheetnames else wb.active
+    has_moq_cols = (
+        str(ws.cell(1, 16).value or "").strip() == "起购数"
+        and str(ws.cell(1, 17).value or "").strip() == "下单倍数"
+    )
     rows_1688 = []
     for r in range(2, ws.max_row + 1):
         st = str(ws.cell(r, 14).value or "").strip()
@@ -191,7 +196,14 @@ def main() -> int:
         m = re.search(r"/offer/(\d+)\.html", url)
         if not m:
             continue
-        rows_1688.append((r, str(ws.cell(r, 2).value or "").strip(), m.group(1), str(ws.cell(r, 9).value or "")))
+        rows_1688.append((
+            r,
+            str(ws.cell(r, 2).value or "").strip(),
+            m.group(1),
+            str(ws.cell(r, 9).value or ""),
+            ws.cell(r, 16).value if has_moq_cols else None,
+            ws.cell(r, 17).value if has_moq_cols else None,
+        ))
 
     oids = [x[2] for x in rows_1688]
     db = asyncio.run(batch_query_1688_offers(oids, port=args.port, batch_size=args.batch_size))
@@ -202,7 +214,8 @@ def main() -> int:
     mismatches = []
     delisted = []
     oos = []
-    for r, sid, oid, spec in rows_1688:
+    moq_mismatches = []
+    for r, sid, oid, spec, ex_moq, ex_mult in rows_1688:
         items = db.get(oid, [])
         mtype, hit = match_qnh_spec(spec, items)
         if not hit:
@@ -213,16 +226,31 @@ def main() -> int:
                 delisted.append((r, oid, spec, hit.get("status")))
             if int(str(hit.get("stock") or "0").strip() or 0) <= 0:
                 oos.append((r, oid, spec, hit.get("stock")))
+            if has_moq_cols:
+                live_moq = int(hit.get("minOrderQuantity") or 1)
+                live_mult = int(hit.get("batchNumber") or 1)
+                try:
+                    ex_moq_i = int(ex_moq) if ex_moq not in (None, "") else None
+                    ex_mult_i = int(ex_mult) if ex_mult not in (None, "") else None
+                except (TypeError, ValueError):
+                    ex_moq_i, ex_mult_i = ex_moq, ex_mult
+                if ex_moq_i != live_moq or ex_mult_i != live_mult:
+                    moq_mismatches.append((r, oid, f"excel=({ex_moq},{ex_mult})", f"live=({live_moq},{live_mult})"))
 
     print(f"\n=== QIANNIUHUA 1688 PRE-IMPORT VERIFICATION ===")
-    print(f"  Total 1688 rows: {len(rows_1688)} | Verified OK: {ok} | Mismatches: {len(mismatches)} | Delisted: {len(delisted)} | OOS(stock=0): {len(oos)}")
+    print(
+        f"  Total 1688 rows: {len(rows_1688)} | Verified OK: {ok} | Mismatches: {len(mismatches)} | "
+        f"Delisted: {len(delisted)} | OOS(stock=0): {len(oos)} | MOQ/Multiple mismatches: {len(moq_mismatches)}"
+    )
     for x in mismatches[:20]:
         print("  [MISMATCH]", x)
     for x in delisted[:10]:
         print("  [DELISTED]", x)
     for x in oos[:10]:
         print("  [OOS]", x)
-    return 1 if mismatches else 0
+    for x in moq_mismatches[:20]:
+        print("  [MOQ_MULT_DIFF]", x)
+    return 1 if (mismatches or moq_mismatches) else 0
 
 
 if __name__ == "__main__":

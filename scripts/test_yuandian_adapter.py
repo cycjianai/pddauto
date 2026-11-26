@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic unit tests for pddauto v3.3 Yuandian SaaS Adapter & Dual-Mode Gates."""
+"""Deterministic unit tests for pddauto v3.5 Yuandian SaaS Adapter, Dual-Mode & 17-Col MOQ/Multiple Gates."""
 
 from __future__ import annotations
 
@@ -194,6 +194,10 @@ def main() -> int:
     assert classify_route("透明桌面收纳盒分类整理收纳篮面膜收纳盒", "1个") == "1688"
     assert classify_route("立体白色口罩一次性三层防护防晒显脸小", "1个") == "1688"
     assert classify_route("镰刀鼻影刷化妆刷修容刷", "1支", category="彩妆香水 美妆工具 化妆刷") == "1688"
+    assert classify_route("轻奢高脚红酒杯 1个", "1个", category="食品饮料 酒水") == "1688"
+    assert classify_route("不锈钢牛排叉甜品叉 1把", "1把", category="厨房餐具") == "1688"
+    assert classify_route("家用厨房剪刀强力鸡骨剪", "1把") == "1688"
+    assert classify_route("烧烤无烟速燃炭 1片", "1片") == "1688"
     assert build_platform_policy("pdd")["platform_policy"] == "pdd_first_lock"
 
     # 11. v3.4 Step 2A hard gate: block 1688 search on PDD-first row without PDD disk artifact
@@ -246,7 +250,7 @@ def main() -> int:
         ops_fb = prepare_patch_operations(SAMPLE_TASK, [fb_ok], card_index_fb, pdd_dirs=[wd / "pdd_kw"])
         assert len(ops_fb) == 1 and ops_fb[0][3]["channel"] == "1688"
 
-        # 13. v3.4 Step 4A (Excel) PDD-first gate + Red-Team Audit
+        # 13. v3.4 + v3.5 Step 4A (Excel) PDD-first gate + 17-Col 1688 MOQ/Multiple Gate + Red-Team Audit
         import openpyxl
 
         xlsx_p = wd / "test.xlsx"
@@ -255,6 +259,7 @@ def main() -> int:
         ws.title = "门店商品"
         ws.append(["SPUID", "SKUID", "分配人", "商品名称", "规格名称", "当前原价", "主图链接", "供货商品链接", "供货规格", "结算链接", "下单比例", "采购价", "单位采购价", "是否匹配", "供货商主图"])
         ws.append(["SPU1", "SKU_FOOD_1", "", "海天 味极鲜酱油 380ml/瓶", "380ml/瓶", 10.0, "", "", "", "", "", "", "", "未匹配", ""])
+        ws.append(["SPU2", "SKU_PDD_1", "", "全棉时代 洗脸巾 100抽/包", "100抽", 15.0, "", "", "", "", "", "", "", "未匹配", ""])
         wb.save(xlsx_p)
 
         dec_no_ev = wd / "dec_bad.json"
@@ -267,6 +272,8 @@ def main() -> int:
             "units": 10,
             "paid": 40.0,
             "img_url": "https://cbu01.alicdn.com/img/ibank/test.jpg",
+            "moq": 2,
+            "order_multiple": 5,
             "pdd_fallback_reason": "pdd_no_match",
         }], ensure_ascii=False), encoding="utf-8")
         # Row 2 has NO pdd_kw/R2.json -> BLOCKED even without manifest.json!
@@ -274,18 +281,99 @@ def main() -> int:
             lambda: apply_decisions(xlsx_p, "门店商品", dec_no_ev, pdd_dirs=[wd / "pdd_kw"]),
             "PDD-First Round-1 Gate",
         )
-        # Create genuine PDD search evidence R2.json -> PASS!
+        # Create genuine PDD search evidence R2.json
         (wd / "pdd_kw" / "R2.json").write_text(json.dumps({"row": 2, "blocked": False, "cands": []}), encoding="utf-8")
-        n_upd = apply_decisions(xlsx_p, "门店商品", dec_no_ev, pdd_dirs=[wd / "pdd_kw"])
-        assert n_upd == 1
+
+        # 14a. v3.5 1688 MOQ/Multiple Gate: reject 1688 row missing moq or order_multiple
+        dec_no_moq = wd / "dec_no_moq.json"
+        dec_no_moq.write_text(json.dumps([{
+            "row": 2,
+            "skuid": "SKU_FOOD_1",
+            "visual_verified": True,
+            "source": "https://detail.1688.com/offer/777000111222.html",
+            "spec": "香辣蘸料120g*10袋",
+            "units": 10,
+            "paid": 40.0,
+            "img_url": "https://cbu01.alicdn.com/img/ibank/test.jpg",
+            "pdd_fallback_reason": "pdd_no_match",
+        }], ensure_ascii=False), encoding="utf-8")
+        expect_raises(
+            lambda: apply_decisions(xlsx_p, "门店商品", dec_no_moq, pdd_dirs=[wd / "pdd_kw"]),
+            "1688 MOQ/Multiple Gate",
+        )
+
+        # 14b. Reject moq < 1 or order_multiple < 1
+        dec_bad_moq = wd / "dec_bad_moq.json"
+        dec_bad_moq.write_text(json.dumps([{
+            "row": 2,
+            "skuid": "SKU_FOOD_1",
+            "visual_verified": True,
+            "source": "https://detail.1688.com/offer/777000111222.html",
+            "spec": "香辣蘸料120g*10袋",
+            "units": 10,
+            "paid": 40.0,
+            "img_url": "https://cbu01.alicdn.com/img/ibank/test.jpg",
+            "moq": 0,
+            "order_multiple": 1,
+            "pdd_fallback_reason": "pdd_no_match",
+        }], ensure_ascii=False), encoding="utf-8")
+        expect_raises(
+            lambda: apply_decisions(xlsx_p, "门店商品", dec_bad_moq, pdd_dirs=[wd / "pdd_kw"]),
+            "invalid moq",
+        )
+
+        # 14c. Valid 1688 row (with moq=2, order_multiple=5) + PDD row (no moq/mult) -> auto-upgrades 15->17 cols!
+        dec_both = wd / "dec_both.json"
+        dec_both.write_text(json.dumps([
+            {
+                "row": 2,
+                "skuid": "SKU_FOOD_1",
+                "visual_verified": True,
+                "source": "https://detail.1688.com/offer/777000111222.html",
+                "spec": "香辣蘸料120g*10袋",
+                "units": 10,
+                "paid": 40.0,
+                "img_url": "https://cbu01.alicdn.com/img/ibank/test.jpg",
+                "moq": 2,
+                "order_multiple": 5,
+                "pdd_fallback_reason": "pdd_no_match",
+            },
+            {
+                "row": 3,
+                "skuid": "SKU_PDD_1",
+                "visual_verified": True,
+                "source": "https://mobile.yangkeduo.com/goods.html?goods_id=939364744313",
+                "spec": "全棉柔巾100抽*6包",
+                "units": 6,
+                "paid": 42.0,
+                "img_url": "",
+            },
+        ], ensure_ascii=False), encoding="utf-8")
+        n_upd = apply_decisions(xlsx_p, "门店商品", dec_both, pdd_dirs=[wd / "pdd_kw"])
+        assert n_upd == 2
+        wb_chk = openpyxl.load_workbook(xlsx_p, data_only=False)
+        ws_chk = wb_chk["门店商品"]
+        assert ws_chk.cell(1, 16).value == "起购数" and ws_chk.cell(1, 17).value == "下单倍数"
+        assert ws_chk.cell(2, 16).value == 2 and ws_chk.cell(2, 17).value == 5
+        assert ws_chk.cell(3, 16).value is None and ws_chk.cell(3, 17).value is None
+
         rep_ok = run_redteam_audit(xlsx_p, "门店商品", pdd_dirs=[wd / "pdd_kw"])
         assert rep_ok["pdd_first_1688_total"] == 1 and len(rep_ok["pdd_first_unverified_1688"]) == 0
+        assert rep_ok["miss_moq_1688"] == 0 and rep_ok["stale_moq_pdd"] == 0
+
+        # 14d. Tampering Col P on 1688 or leaving stale Col P on PDD is caught by Red-Team Audit
+        ws_chk.cell(2, 16).value = None
+        ws_chk.cell(3, 16).value = 2
+        wb_chk.save(xlsx_p)
+        rep_pq_bad = run_redteam_audit(xlsx_p, "门店商品", pdd_dirs=[wd / "pdd_kw"])
+        assert rep_pq_bad["miss_moq_1688"] == 1 and rep_pq_bad["stale_moq_pdd"] == 1
+
         # Remove R2.json -> Red-Team Audit immediately flags unverified 1688 on food row!
         (wd / "pdd_kw" / "R2.json").unlink()
         rep_bad = run_redteam_audit(xlsx_p, "门店商品", pdd_dirs=[wd / "pdd_kw"])
         assert len(rep_bad["pdd_first_unverified_1688"]) == 1
 
-    print(json.dumps({"passed": True, "tests": 13}, ensure_ascii=False))
+    print(json.dumps({"passed": True, "tests": 14}, ensure_ascii=False))
     return 0
 
 

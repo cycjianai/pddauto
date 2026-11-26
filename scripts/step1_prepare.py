@@ -36,10 +36,10 @@ PDD_CATEGORY_RE = re.compile(
     r"个人洗护|个护|洗护|护肤|纸品|家清|母婴用品.*尿裤|尿不湿|宠物食品|猫粮|狗粮|猫罐头"
 )
 GENERAL_MERCH_CATEGORY_RE = re.compile(
-    r"家居日用|家纺布艺|厨具餐具|水具|五金|服饰|鞋靴|箱包|美妆工具|化妆刷|玩具|文具|办公|运动户外|汽车用品|智能穿戴配件|数码配件|手机配件"
+    r"家居日用|家纺布艺|厨具餐具|厨房餐具|水具|五金|服饰|鞋靴|男女潮鞋|箱包|行李收纳|床上用品|内衣裤袜|一次用品|美妆工具|美甲工具|美发工具|化妆刷|玩具|棋牌玩具|文具|办公|运动户外|运动健身|户外垂钓|节庆氛围|首饰头饰|秋冬御寒|汽车用品|智能穿戴配件|数码配件|手机配件"
 )
 NON_FMCG_OBJECT_RE = re.compile(
-    r"收纳盒|收纳篮|整理箱|玻璃杯|水杯|保温杯|果茶杯|奶茶杯|果汁杯|咖啡杯|条绒浴巾|大浴巾|化妆刷|鼻影刷|眼影刷|开瓶器|启瓶器|开酒器|修眉刀|刮眉刀|防晒口罩|立体.*口罩|一次性.*口罩|医用口罩|防晒衣|冰袖|遮阳帽|遮阳伞|充电器|数据线|保护壳|手机壳"
+    r"收纳盒|收纳篮|整理箱|玻璃杯|水杯|保温杯|果茶杯|奶茶杯|果汁杯|咖啡杯|红酒杯|马克杯|雪克杯|条绒浴巾|大浴巾|化妆刷|鼻影刷|眼影刷|开瓶器|启瓶器|开酒器|修眉刀|刮眉刀|牛排叉|甜品叉|餐叉|叉子|勺子|调羹|锅铲|漏勺|筷子|菜刀|水果刀|剪刀|打火机|自粘窗帘|窗帘|速燃炭|打包带|卡套|拖鞋|防晒口罩|立体.*口罩|一次性.*口罩|医用口罩|防晒衣|冰袖|遮阳帽|遮阳伞|充电器|数据线|保护壳|手机壳"
 )
 PDD_PRIORITY_RE = re.compile(
     r"零食|饮料|牛奶|纯牛奶|酸奶|鲜奶|矿泉水|饮用水|气泡水|汽水|可乐|雪碧|啤酒|鸡尾酒|清酒|红酒|白酒|咖啡|奶茶|茶饮料|茶叶|茶包|绿茶|红茶|乌龙茶|花茶|袋泡茶|凉茶|果茶|厚椰乳|椰浆|八宝粥|麦片|燕麦|豆浆|藕粉|芝麻糊|"
@@ -79,13 +79,13 @@ def classify_route(name: str, spec: str, category: str = "") -> str:
     # True consumable paper/diaper/hygiene items always stay PDD-first
     if re.search(r"洗脸巾|湿巾|抽纸|卷纸|卫生巾|纸尿裤|拉拉裤|尿不湿", txt):
         return "pdd"
+    if NON_FMCG_OBJECT_RE.search(txt):
+        return "1688"
     if category:
         if PDD_CATEGORY_RE.search(category) and not GENERAL_MERCH_CATEGORY_RE.search(category):
             return "pdd"
         if GENERAL_MERCH_CATEGORY_RE.search(category):
             return "1688"
-    if NON_FMCG_OBJECT_RE.search(txt):
-        return "1688"
     if PDD_PRIORITY_RE.search(txt):
         return "pdd"
     return "1688"

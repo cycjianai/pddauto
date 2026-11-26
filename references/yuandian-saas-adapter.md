@@ -8,14 +8,14 @@
 
 ## 一、双模式对照与自动分流
 
-| 维度 | 模式 A：本地 Excel 15 列模式 | 模式 B：原点闪购管理后台模式 (`yuandian_saas`) |
+| 维度 | 模式 A：本地 Excel 17 列模式（含 1688 起购数/下单倍数） | 模式 B：原点闪购管理后台模式 (`yuandian_saas`) |
 | :--- | :--- | :--- |
 | **触发场景** | 用户指定本地 `.xlsx` 工作簿路径 | 用户要求处理 `saas.fuliops.cn/procurement-sourcing` 采购寻源订单，或 9222 浏览器当前打开管理后台订单 |
 | **Step 1 入口** | `scripts/step1_prepare.py --excel <表.xlsx>` | `scripts/step1_yuandian_pull.py --workdir <dir> [--task-no ...]` |
 | **规则源** | `references/pricing-and-matching-contract.md` | **先拉取在线实时规则** `GET /api/v1/admin/procurement-sourcing/rules`（落盘 `yuandian_rules.json`），与本 Skill 硬闸门叠加取严 |
 | **中间契约** | `<workdir>/manifest.json` + `store/{row}.jpg` | **完全同构**（附带 `source_mode: "yuandian_saas"`, `task_no`, `yuandian_item_id`） |
 | **Step 2 & 3** | 1688 静默 + 拼多多真机 App + 视觉裁判拼图 | **100% 复用**（零改动直接跑 `step2_1688_search.py` / `step2_pdd_search.py` / `step3_render_judge_sheet.py`） |
-| **Step 4 入口** | `scripts/step4_apply_and_export.py`（写 15 列 + 出 HTML 看板） | `scripts/step4_yuandian_push.py`（PATCH 12 列 + 同步 `channel` + 红队校验） |
+| **Step 4 入口** | `scripts/step4_apply_and_export.py`（写 17 列 + 出 HTML 看板） | `scripts/step4_yuandian_push.py`（PATCH 12 列 + 同步 `channel` + 红队校验） |
 | **安全边界** | 原子替换 `.xlsx` + ZIP 校验 | **严禁自动调用 `/deliver` 或 `/cancel`**，推进至 `ready_to_deliver`（待回传）后暂停等人工点击「回传客户并结算」 |
 
 ---

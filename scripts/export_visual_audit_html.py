@@ -484,7 +484,7 @@ HTML_HEAD = r"""<!DOCTYPE html>
     <div>
       <h1>🛒 1688 &amp; 拼多多供应链直检看板</h1>
       <div class="header-desc" id="headerDesc">
-        双列图片直观对照 | 支持导入任意规定 15 列 Excel 自动可视化并同步已标记状态
+        双列图片直观对照 | 支持导入任意规定 15/17 列 Excel 自动可视化并同步已标记状态
       </div>
     </div>
   </div>
@@ -642,6 +642,8 @@ HTML_HEAD = r"""<!DOCTYPE html>
     const groupPriceCol = findCol([/^采购价$/, /实付价|拿货价/], 11);
     const unitPriceCol = findCol([/^单位采购价$/, /到手单价|单位成本|单价/], 12);
     const statusCol = findCol([/^是否匹配$/, /匹配状态|审核状态/], 13);
+    const moqCol = findCol([/^起购数$/, /起订量|起批量/], -1);
+    const orderMultipleCol = findCol([/^下单倍数$/, /拍下倍数|倍数/], -1);
 
     // 供货商主图列：优先精确匹配表头，避免把“sku问题”误识别为图片列
     let supplierPicCol = findCol([/^供货商主图$/, /供货主图|货源主图|供货商.*图/], -1);
@@ -674,7 +676,9 @@ HTML_HEAD = r"""<!DOCTYPE html>
       groupPriceCol,
       unitPriceCol,
       statusCol,
-      supplierPicCol
+      supplierPicCol,
+      moqCol,
+      orderMultipleCol
     };
   }
 
@@ -774,6 +778,9 @@ HTML_HEAD = r"""<!DOCTYPE html>
         originalMatchLabel = '未匹配';
       }
 
+      const rawMoq = cols.moqCol >= 0 ? parseNumber(getCellRawValue(ws, r, cols.moqCol), 0) : 0;
+      const rawMult = cols.orderMultipleCol >= 0 ? parseNumber(getCellRawValue(ws, r, cols.orderMultipleCol), 0) : 0;
+
       items.push({
         row: excelRow,
         spuId,
@@ -792,7 +799,8 @@ HTML_HEAD = r"""<!DOCTYPE html>
         groupPrice,
         unitPrice,
         sales: cached ? (cached.sales || 0) : 0,
-        moq: cached ? (cached.moq || 1) : 1,
+        moq: rawMoq > 0 ? Math.round(rawMoq) : (cached ? (cached.moq || null) : null),
+        orderMultiple: rawMult > 0 ? Math.round(rawMult) : (cached ? (cached.orderMultiple || null) : null),
         matchStatus,
         wasUnmatched: matchStatus === 'UNMATCHED',
         originalMatchLabel,
@@ -848,9 +856,12 @@ HTML_HEAD = r"""<!DOCTYPE html>
       ? `<button class="${btnClass}" id="btn-toggle-${it.row}" onclick="toggleMatchStatus(${it.row})">${btnText}</button>`
       : `<button class="btn-audit btn-mark-mismatch" id="btn-toggle-${it.row}" onclick="toggleMatchStatus(${it.row})">❌ 标为不匹配</button>`;
 
+    const moqTag = (it.platform === '1688' && (it.moq || it.orderMultiple))
+      ? ` | 起购${escapeHtml(it.moq || 1)}·倍数${escapeHtml(it.orderMultiple || 1)}`
+      : '';
     const supSpecLine = isUnmatched && !it.groupPrice
       ? escapeHtml(it.unmatchedReason || '暂无合规货源')
-      : `${escapeHtml(it.ratio)}倍包装 | 采购¥${Number(it.groupPrice || 0).toFixed(2)}`;
+      : `${escapeHtml(it.ratio)}倍包装 | 采购¥${Number(it.groupPrice || 0).toFixed(2)}${moqTag}`;
     const supPriceLine = isUnmatched && !it.unitPrice
       ? '暂无采购价'
       : `到手单价: ¥${Number(it.unitPrice || 0).toFixed(2)}`;
@@ -1412,6 +1423,10 @@ def load_items_from_excel(excel_path: str, sheet_name: str, pdd_img_dirs: str = 
     by_rg, by_g = _index_pdd_hero_images(pdd_img_dirs)
     wb = openpyxl.load_workbook(excel_path, data_only=False)
     ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
+    has_moq_cols = (
+        str(ws.cell(1, 16).value or "").strip() == "起购数"
+        and str(ws.cell(1, 17).value or "").strip() == "下单倍数"
+    )
     items: list[dict] = []
     limit = min(ws.max_row, max_row) if max_row and max_row > 0 else ws.max_row
 
@@ -1479,6 +1494,20 @@ def load_items_from_excel(excel_path: str, sheet_name: str, pdd_img_dirs: str = 
             match_status = "UNMATCHED"
             orig_label = "未匹配"
 
+        moq_val = None
+        order_mult_val = None
+        if has_moq_cols and platform == "1688":
+            p_raw = ws.cell(r, 16).value
+            q_raw = ws.cell(r, 17).value
+            try:
+                moq_val = int(p_raw) if p_raw not in (None, "") else None
+            except (TypeError, ValueError):
+                moq_val = None
+            try:
+                order_mult_val = int(q_raw) if q_raw not in (None, "") else None
+            except (TypeError, ValueError):
+                order_mult_val = None
+
         items.append({
             "row": r,
             "spuId": spu_id,
@@ -1497,7 +1526,8 @@ def load_items_from_excel(excel_path: str, sheet_name: str, pdd_img_dirs: str = 
             "groupPrice": group_p,
             "unitPrice": unit_p,
             "sales": 0,
-            "moq": 1,
+            "moq": moq_val,
+            "orderMultiple": order_mult_val,
             "matchStatus": match_status,
             "wasUnmatched": match_status == "UNMATCHED",
             "originalMatchLabel": orig_label,
@@ -1507,8 +1537,8 @@ def load_items_from_excel(excel_path: str, sheet_name: str, pdd_img_dirs: str = 
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="导出本地单文件可视化比对核验看板 (pddauto v3.0)")
-    parser.add_argument("--excel", default="", help="权威 15 列 Excel 路径（v3.0 首选直读模式）")
+    parser = argparse.ArgumentParser(description="导出本地单文件可视化比对核验看板 (pddauto v3.5)")
+    parser.add_argument("--excel", default="", help="权威 15/17 列 Excel 路径（v3.5 首选直读模式，支持 1688 起购数/下单倍数）")
     parser.add_argument("--sheet", default="门店商品", help="Excel 工作表名（默认 门店商品）")
     parser.add_argument("--pdd-img-dirs", default="", help="逗号分隔的拼多多本地实拍头图目录/通配符（自动压缩内嵌）")
     parser.add_argument("--progress", default=PROGRESS_PATH, help="[兼容模式] 旧版比对进度 JSON 路径")

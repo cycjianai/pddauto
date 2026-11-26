@@ -1,4 +1,4 @@
-# 脚本工具 CLI 与 JSON 输入输出契约 (Tool I/O Schemas v3.0)
+# 脚本工具 CLI 与 JSON 输入输出契约 (Tool I/O Schemas v3.5)
 
 所有脚本位于本 Skill 的 `scripts/` 目录，全部自带 `argparse` 参数校验，**零 `/tmp` 硬编码依赖**。
 
@@ -49,17 +49,23 @@ python3 scripts/step1_prepare.py \
 
 ### 模式 A：以图搜图 (`--mode img`)
 ```sh
-python3 scripts/step2_1688_search.py --workdir <dir> --mode img --rows '[2,3,4]'
+python3 scripts/step2_1688_search.py \
+  --workdir <dir> --mode img \
+  --rows '[2,3,4]' \
+  [--img-burst 12 --img-cooldown 45 --img-delay-min 5.2 --img-delay-max 6.8]
 # 或 --rows-file <rows.json>
 ```
-- 输出：`<workdir>/aliimg/{row}.json`（含 `items: [{id, title, price, text, img, url}]`，最多 60 条）。
+- 输出：`<workdir>/aliimg/{row}.json`（含 `items: [{id, title, price, text, img, url}]`，最多 60 条）。默认每 12 次图搜自动冷却 45 秒、单次随机间隔 `5.2~6.8s` 防限流。
 
 ### 模式 B：关键词补搜 (`--mode kw`)
 ```sh
-python3 scripts/step2_1688_search.py --workdir <dir> --mode kw --jobs-file <kw_jobs.json>
+python3 scripts/step2_1688_search.py \
+  --workdir <dir> --mode kw \
+  --jobs-file <kw_jobs.json> \
+  [--kw-burst 4 --kw-cooldown 55]
 ```
 - `kw_jobs.json` 输入格式：`[{"row": 121, "kw": "品牌 核心品名 规格"}]`
-- 输出：`<workdir>/alikw/{row}.json`。
+- 输出：`<workdir>/alikw/{row}.json`。连续 2 次空结果自动判定软限流并以退出码 `9` 安全中止。
 
 ### 模式 C：详情与二级 SKU 静默抓取 (`--mode detail`)
 ```sh
@@ -72,7 +78,7 @@ python3 scripts/step2_1688_search.py --workdir <dir> --mode detail --plan-file <
   {"row": 121, "oid": "948931844389", "option": "【柔焦雾面】30ml"}
 ]
 ```
-- 输出：`<workdir>/acard/{row}-{oid}.json`（带 `option` 点击时为 `{row}-{oid}-clicked.json`），含 `ready, title, goods, main, ship, attrs, options, rows, image, meta`。
+- 输出：`<workdir>/acard/{row}-{oid}.json`（带 `option` 点击时为 `{row}-{oid}-clicked.json`），含 `ready, title, offerTitle, goods, main, moq, order_multiple, ship, attrs, options, rows, skuProps, skuMap, qnh_specs, image, meta`。
 - **退出码**：`0` 正常完成；`9` 触发风控/滑块已中止（必须立即停手回报用户）。
 
 ---
@@ -136,7 +142,10 @@ python3 scripts/step4_apply_and_export.py \
   [--acard-dirs "<workdir>/sku_live,<workdir>/acard"] \
   [--html-out /abs/path/to/sheet_直检看板.html]
 ```
-- **内置零人工备注 + 逐字节规格强校验闸门**：自动发现同目录 `sku_live/`、`acard/` 校验 1688 `spec` 必须逐字节命中真实 `skuMap/qnh_specs`（保留内部连续空格）；全平台（含拼多多）强制阻断任何人工括号备注（包邮/起批/券后/百亿补贴/店铺优惠/大促/随机同价）、合成多 SKU 套装算式及 `" / "` 分隔符。
+- **内置零人工备注 + 逐字节规格 + 1688 起购数/下单倍数强校验闸门**：
+  - 自动发现同目录 `sku_live/`、`acard/` 校验 1688 `spec` 必须逐字节命中真实 `skuMap/qnh_specs`（保留内部连续空格）；
+  - 全平台（含拼多多）强制阻断任何人工括号备注（包邮/起批/券后/百亿补贴/店铺优惠/大促/随机同价）、合成多 SKU 套装算式及 `" / "` 分隔符；
+  - **v3.5 标准 17 列强校验**：当工作表 `P/Q` 列为空或为 `起购数`/`下单倍数` 时自动启用 17 列模式（自动补齐 `P1="起购数"`、`Q1="下单倍数"` 表头），强制要求所有 1688 行提供正整数 `moq`（≥1）与 `order_multiple`（≥1），拼多多/组合/生鲜行自动清空 `P/Q` 列；红队自检强制核查 `miss_moq_1688=0` 与 `stale_moq_pdd=0`。
 
 ---
 
@@ -160,7 +169,7 @@ python3 scripts/qnh_1688_validator.py \
   --excel /abs/path/to/sheet.xlsx \
   [--sheet Sheet1] [--out-json <workdir>/qnh_verify_cache.json]
 ```
-- 校验全部 1688 行的规格是否 100% 命中牵牛花实库 `channelSpecName`，并额外标出已下架（`status != 1`）或库存为 0（`stock <= 0`）的预警行。
+- 校验全部 1688 行的规格是否 100% 命中牵牛花实库 `channelSpecName`、是否已下架（`status != 1`）或库存为 0（`stock <= 0`），并在工作表含 `起购数`/`下单倍数`（P/Q 列）时**逐行比对实库 `minOrderQuantity` 与 `batchNumber`（空/0 视作 1）**；任一规格不匹配或起购数/下单倍数不一致均以退出码 `1` 报错。
 
 **`decisions.json` 强制输入格式**：
 ```json
@@ -174,7 +183,9 @@ python3 scripts/qnh_1688_validator.py \
     "checkout": "https://detail.1688.com/offer/948931844389.html",
     "units": 1,
     "paid": 9.9,
-    "img_url": "https://cbu01.alicdn.com/img/ibank/O1CN01LHgEF42A1YIjZKP3g_!!2207263578143-0-cib.jpg"
+    "img_url": "https://cbu01.alicdn.com/img/ibank/O1CN01LHgEF42A1YIjZKP3g_!!2207263578143-0-cib.jpg",
+    "moq": 2,
+    "order_multiple": 1
   },
   {
     "row": 340,
@@ -197,6 +208,8 @@ python3 scripts/qnh_1688_validator.py \
     "units": 1,
     "paid": 8.9,
     "img_url": "https://cbu01.alicdn.com/img/ibank/xxx.jpg",
+    "moq": 1,
+    "order_multiple": 1,
     "pdd_fallback_reason": "pdd_low_margin",
     "pdd_best_unit_price": 12.5
   },
@@ -207,11 +220,13 @@ python3 scripts/qnh_1688_validator.py \
   }
 ]
 ```
+> **v3.5 1688 必填字段**：模式 A Excel 写入 1688 行时，`decisions.json` **必须**包含正整数 `"moq"`（P 列 `起购数`，取牵牛花 `minOrderQuantity` 或 1688 起批量）与 `"order_multiple"`（Q 列 `下单倍数`，取牵牛花 `batchNumber` 或 1688 拍下倍数，为空/不限填 `1`）；拼多多与 `status_only` 行不填，写入时自动保持 P/Q 留空。
+>
 > **v3.4 食品/快消品二轮回退 1688 必填字段**：凡 `platform_policy == "pdd_first_lock"`（或类目/标题归属食品/快消）的商品，若第二轮回退写入 `1688.com`，**必须**在磁盘存在非阻断的 `pdd_*/R{row}.json` 实搜记录，且在 `decisions.json` 显式声明 `"pdd_fallback_reason"`（仅允许 `"pdd_no_match"` 或 `"pdd_low_margin"`；选 `"pdd_low_margin"` 时可选填 `"pdd_best_unit_price"`，若毛利已 `≥50%` 代码直接拦截报错）。
 
 **执行后同步产出的双交付物**：
-1. 校验通过的 15 列标准 Excel（原子替换 + ZIP 校验 + 红队自检报告）；
-2. 与 Excel 100% 同步的单文件离线直检看板 `<excel_stem>_直检看板.html`（含 1688 高清 CDN 图 + 拼多多内嵌实拍头图 + 导入 Excel 双向同步结尾「不匹配」 + 一键跳至最后不匹配 + 单 `.xlsx` 规范下载）。
+1. 校验通过的 17 列标准 Excel（原子替换 + ZIP 校验 + 红队自检报告）；
+2. 与 Excel 100% 同步的单文件离线直检看板 `<excel_stem>_直检看板.html`（含 1688 高清 CDN 图 + 起购数/下单倍数标签 + 拼多多内嵌实拍头图 + 导入 Excel 双向同步结尾「不匹配」 + 一键跳至最后不匹配 + 单 `.xlsx` 规范下载）。
 
 ---
 

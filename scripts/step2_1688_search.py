@@ -91,6 +91,10 @@ def main() -> int:
     ap.add_argument("--cooldown", type=int, default=65, help="[detail] Cooldown seconds between bursts (default 65)")
     ap.add_argument("--kw-burst", type=int, default=4, help="[kw] Pause cooldown after this many keyword searches (default 4)")
     ap.add_argument("--kw-cooldown", type=int, default=55, help="[kw] Cooldown seconds between kw bursts (default 55)")
+    ap.add_argument("--img-burst", type=int, default=12, help="[img] Pause cooldown after this many image searches (default 12)")
+    ap.add_argument("--img-cooldown", type=int, default=45, help="[img] Cooldown seconds between img bursts (default 45)")
+    ap.add_argument("--img-delay-min", type=float, default=5.2, help="[img] Minimum seconds between img searches (default 5.2)")
+    ap.add_argument("--img-delay-max", type=float, default=6.8, help="[img] Maximum seconds between img searches (default 6.8)")
     ap.add_argument("--overwrite", action="store_true", help="Re-fetch even if cached JSON exists")
     args = ap.parse_args()
 
@@ -129,6 +133,7 @@ def main() -> int:
                 raise SystemExit("--mode img requires --rows or --rows-file")
             out_dir = workdir / "aliimg"
             out_dir.mkdir(parents=True, exist_ok=True)
+            fetched_since_cool = 0
             for i, r in enumerate(rows, 1):
                 out_f = out_dir / f"{r}.json"
                 if not args.overwrite and out_f.is_file():
@@ -136,6 +141,10 @@ def main() -> int:
                     if old.get("items"):
                         print(f"[{i}/{len(rows)}] R{r} CACHED ({len(old['items'])} items)", flush=True)
                         continue
+                if args.img_burst > 0 and fetched_since_cool >= args.img_burst:
+                    print(f"[COOLDOWN] Reached {args.img_burst} img searches, cooling {args.img_cooldown}s to avoid 1688 rate limit...", flush=True)
+                    time.sleep(args.img_cooldown)
+                    fetched_since_cool = 0
                 res = silent_image_search(sess, workdir / "store" / f"{r}.jpg")
                 if res.get("challenge"):
                     print(f"[CHALLENGE_HALT] R{r}: 1688 risk gate triggered. Stopping immediately (no bypass).", flush=True)
@@ -143,8 +152,9 @@ def main() -> int:
                 res["row"] = r
                 if res.get("items") or res.get("empty"):
                     out_f.write_text(json.dumps(res, ensure_ascii=False), encoding="utf-8")
+                fetched_since_cool += 1
                 print(f"[{i}/{len(rows)}] R{r} items={len(res.get('items', []))} err={res.get('error', '')}", flush=True)
-                time.sleep(random.uniform(3.8, 4.8))
+                time.sleep(random.uniform(args.img_delay_min, args.img_delay_max))
 
         elif args.mode == "kw":
             if not args.jobs_file:
